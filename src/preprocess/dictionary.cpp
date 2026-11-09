@@ -14,10 +14,16 @@ const unsigned char kEndUpper = 0x06;
 const unsigned char kEscape = 0x0C;
 const unsigned char kQuote = 0x08;
 const char* kQuoteStr = "&quot;";
+const unsigned char kAmp = 0x01;
+const char* kAmpStr = "&amp;";
+const unsigned char kLt = 0x02;
+const char* kLtStr = "&lt;";
+const unsigned char kGt = 0x03;
+const char* kGtStr = "&gt;";
 
 void EncodeByte(unsigned char c, FILE* output) {
   if (c == kEndUpper || c == kEscape || c == kUppercase ||
-      c == kCapitalized || c == kQuote || c >= 0x80) {
+      c == kCapitalized || c == kQuote || c == kAmp || c == kLt || c == kGt || c >= 0x80) {
     putc(kEscape, output);
   }
   putc(c, output);
@@ -75,20 +81,36 @@ Dictionary::Dictionary(FILE* dictionary, bool encode, bool decode) {
 
 void Dictionary::Encode(FILE* input, int len, FILE* output) {
   std::string word;
-  int num_upper = 0, num_lower = 0, quote_state = 0;
+  int num_upper = 0, num_lower = 0;
+  bool after_amp = false;
   for (int pos = 0; pos < len; ++pos) {
     unsigned char c = getc(input);
-    if (c == kQuoteStr[quote_state]) {
-      ++quote_state;
-      if (quote_state == 6) {
+    if (c == ';' && after_amp && num_upper == 0) {
+      if (word == "quot") {
         putc(kQuote, output);
-        num_upper = 0;
         num_lower = 0;
         word.clear();
+        after_amp = false;
+        continue;
+      } else if (word == "amp") {
+        putc(kAmp, output);
+        num_lower = 0;
+        word.clear();
+        after_amp = false;
+        continue;
+      } else if (word == "lt") {
+        putc(kLt, output);
+        num_lower = 0;
+        word.clear();
+        after_amp = false;
+        continue;
+      } else if (word == "gt") {
+        putc(kGt, output);
+        num_lower = 0;
+        word.clear();
+        after_amp = false;
         continue;
       }
-    } else {
-      quote_state = 0;
     }
     bool advance = false;
     if (word.size() > longest_word_) {
@@ -116,6 +138,7 @@ void Dictionary::Encode(FILE* input, int len, FILE* output) {
     if (advance) {
       if (word.empty()) {
         EncodeByte(c, output);
+        after_amp = (c == '&');
       } else {
         bool next_lower = (c >= 'a' && c <= 'z');
         EncodeWord(word, num_upper, next_lower, output);
@@ -125,11 +148,14 @@ void Dictionary::Encode(FILE* input, int len, FILE* output) {
         if (next_lower) {
           ++num_lower;
           word += c;
+          after_amp = false;
         } else if (c >= 'A' && c <= 'Z') {
           ++num_upper;
           word += (c - 'A' + 'a');
+          after_amp = false;
         } else {
           EncodeByte(c, output);
+          after_amp = (c == '&');
         }
         if (pos == len - 1 && !word.empty()) {
           EncodeWord(word, num_upper, false, output);
@@ -204,6 +230,18 @@ void Dictionary::AddToBuffer(FILE* input) {
   } else if (c == kQuote) {
     for (int i = 1; i < 6; ++i) {
       output_buffer_.push_back(kQuoteStr[i]);
+    }
+  } else if (c == kAmp) {
+    for (int i = 1; i < 5; ++i) {
+      output_buffer_.push_back(kAmpStr[i]);
+    }
+  } else if (c == kLt) {
+    for (int i = 1; i < 4; ++i) {
+      output_buffer_.push_back(kLtStr[i]);
+    }
+  } else if (c == kGt) {
+    for (int i = 1; i < 4; ++i) {
+      output_buffer_.push_back(kGtStr[i]);
     }
   } else if (c == kUppercase) {
     decode_upper_ = true;
