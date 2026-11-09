@@ -4,3 +4,7 @@
 /cmix
 /enwik9-preproc
 /remap
+
+*.obj
+build_msvc/
+*.exe

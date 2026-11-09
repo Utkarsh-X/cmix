@@ -13,7 +13,7 @@
 #ifdef OUTPUT_LR
 #define LSTM_OUTPUT_LR_BASE ((float)(OUTPUT_LR))
 #else
-#define LSTM_OUTPUT_LR_BASE learning_rate_
+#define LSTM_OUTPUT_LR_BASE 0.06f
 #endif
 
 // LSTM_LR_SCALE_OUT=<float> (track 3, per-layer LR, 2026-07-12): a pure
