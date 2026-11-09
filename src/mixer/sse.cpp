@@ -204,8 +204,8 @@ static const int M_x2wr = (8320+0) * (1);
 
 static const int M_mix1_Volume = 1* 4* (1<<8)* (1<<3)* 79;
 static const int M_mix2_Volume = 1* 3* (1<<1)* (1<<8)* 256;
-static const int M_sm6x_Volume = 1* 3* (1<<7)* (1<<8)* 256;
-static const int M_sm7x_Volume = 1* 3* (1<<5)* (1<<8)* 255;
+static const int M_sm6x_Volume = 1* 3* (1<<4)* (1<<8)* 256;
+static const int M_sm7x_Volume = 1* 3* (1<<4)* (1<<8)* 255;
 
 struct M_T {
 
@@ -247,7 +247,7 @@ uint M_Estimate( uint p ) {
 
   sm7x = 0;
   sm7x = sm7x*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  sm7x = (sm7x<<5) + ((ffl)&31);
+  sm7x = (sm7x<<4) + ((ffl)&15);
   sm7x = (sm7x<<8) + ((pc)&255);
   sm7x = (sm7x*255) + M_sm7mask0[j];
 
@@ -259,7 +259,7 @@ uint M_Estimate( uint p ) {
 
   sm6x = 0;
   sm6x = sm6x*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  sm6x = (sm6x<<7) + ((ffl)&127);
+  sm6x = (sm6x<<4) + ((ffl)&15);
   sm6x = (sm6x<<8) + ((pc)&255);
   sm6x = (sm6x*256) + (j);
 
