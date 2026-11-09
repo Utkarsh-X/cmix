@@ -190,7 +190,7 @@ void Predictor::AddMixers() {
       vocab_size, new Lstm(vocab_size, vocab_size, 200, 2, 100, 0.03, 10)));
   AddAuxiliary();
 
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 2; ++i) {
     layers_.push_back(std::unique_ptr<MixerInput>(new MixerInput(sigmoid_,
         1.0e-4)));
     mixers_.push_back(std::vector<std::unique_ptr<Mixer>>());
@@ -329,31 +329,8 @@ void Predictor::AddMixers() {
 
   input_size = mixers_[0].size() + auxiliary_.size();
   layers_[1]->SetNumModels(input_size);
-
-  AddMixer(1, manager_.zero_context_, 0.005);
-  AddMixer(1, manager_.zero_context_, 0.0005);
-  AddMixer(1, manager_.long_bit_context_, 0.005);
-  AddMixer(1, manager_.long_bit_context_, 0.0005);
-  AddMixer(1, manager_.long_bit_context_, 0.00001);
-  AddMixer(1, manager_.recent_bytes_[0], 0.005);
-  AddMixer(1, manager_.recent_bytes_[1], 0.005);
-  AddMixer(1, manager_.recent_bytes_[2], 0.005);
-  AddMixer(1, manager_.longest_match_, 0.0005);
-  AddMixer(1, manager_.wrt_context_, 0.002);
-  AddMixer(1, interval1.GetContext(), 0.001);
-  AddMixer(1, interval2.GetContext(), 0.001);
-  AddMixer(1, interval3.GetContext(), 0.001);
-  AddMixer(1, interval4.GetContext(), 0.001);
-  AddMixer(1, interval5.GetContext(), 0.001);
-  AddMixer(1, interval6.GetContext(), 0.001);
-  AddMixer(1, interval7.GetContext(), 0.001);
-  AddMixer(1, bit_context4.GetContext(), 0.001);
-  AddMixer(1, bit_context5.GetContext(), 0.001);
-  AddMixer(1, bit_context6.GetContext(), 0.001);
-
-  input_size = mixers_[0].size() + mixers_[1].size() + auxiliary_.size();
-  layers_[2]->SetNumModels(input_size);
-  AddMixer(2, manager_.zero_context_, 0.0003);
+  AddMixer(1, manager_.zero_context_, 0.0003);
+  mixers_[1][0]->E2ESeedHead(mixers_[0].size(), 1.0f / (float)mixers_[0].size());
 }
 
 int lstmpr=0, lstmex=0;
@@ -396,21 +373,13 @@ float Predictor::Predict() {
     float p = mixers_[0][i]->Mix();
     layers_[0]->SetExtraInput(p);
     layers_[1]->SetStretchedInput(i, p);
-    layers_[2]->SetStretchedInput(i, p);
   }
   layers_[0]->ClearExtraInputs();
   for (unsigned int i = 0; i < auxiliary_.size(); ++i) {
     float p = layers_[0]->Inputs()[auxiliary_[i]];
     layers_[1]->SetStretchedInput(mixers_[0].size() + i, p);
-    layers_[2]->SetStretchedInput(mixers_[0].size() + mixers_[1].size() + i, p);
   }
-  for (unsigned int i = 0; i < mixers_[1].size(); ++i) {
-    float p = mixers_[1][i]->Mix();
-    layers_[1]->SetExtraInput(p);
-    layers_[2]->SetStretchedInput(mixers_[0].size() + i, p);
-  }
-  layers_[1]->ClearExtraInputs();
-  float p = Sigmoid::Logistic(mixers_[2][0]->Mix());
+  float p = Sigmoid::Logistic(mixers_[1][0]->Mix());
   p = sse_.Predict(p);
   if (byte_mixer_override >= 0) {
     return byte_mixer_override;
@@ -429,6 +398,7 @@ void Predictor::Perceive(int bit) {
   for (const auto& byte_mixer : byte_mixers_) {
     byte_mixer->Perceive(bit);
   }
+  E2EGrad(bit);
   for (unsigned int i = 0; i < mixers_.size(); ++i) {
     for (const auto& mixer : mixers_[i]) {
       mixer->Perceive(bit);
@@ -483,5 +453,30 @@ void Predictor::Pretrain(int bit) {
       model->ByteUpdate();
     }
     manager_.bit_context_ = 1;
+  }
+}
+
+void Predictor::E2EGrad(int bit) {
+  const unsigned int n = (unsigned int)mixers_[0].size();
+  if (n == 0 || n > 64) return;
+  const float g_final = Sigmoid::Logistic(mixers_[1][0]->E2EP()) - (float)bit;
+  float gamma[64];
+  const float* xw[64];
+  for (unsigned int k = 0; k < n; ++k) xw[k] = mixers_[0][k]->E2EXRow();
+  const float* const w1 = mixers_[1][0]->E2EWRow();
+  const float s_min = layers_[0]->StretchedMin();
+  const float s_max = layers_[0]->StretchedMax();
+  unsigned int i = n;
+  while (i > 0) {
+    --i;
+    float s = w1[i];
+    for (unsigned int k = i + 1; k < n; ++k) {
+      if (xw[k]) s += gamma[k] * xw[k][i];
+    }
+    const float h = mixers_[0][i]->E2EP();
+    gamma[i] = (h >= s_max || h <= s_min) ? 0.0f : s;
+  }
+  for (unsigned int j = 0; j < n; ++j) {
+    mixers_[0][j]->E2ESetErr(g_final * gamma[j]);
   }
 }

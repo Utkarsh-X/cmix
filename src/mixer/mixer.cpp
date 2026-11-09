@@ -101,6 +101,7 @@ ContextData* Mixer::GetContextData() {
 
 float Mixer::Mix() {
   ContextData* data = GetContextData();
+  current_data_ = data;
 
 #ifdef __AVX2__
   int n = inputs_.size();
@@ -133,8 +134,27 @@ float Mixer::Mix() {
   return p_;
 }
 
+const float* Mixer::E2EWRow() {
+  if (!current_data_) current_data_ = GetContextData();
+  return &current_data_->weights[0];
+}
+
+const float* Mixer::E2EXRow() {
+  if (extra_inputs_.size() == 0) return nullptr;
+  if (!current_data_) current_data_ = GetContextData();
+  return &current_data_->extra_weights[0];
+}
+
+void Mixer::E2ESeedHead(unsigned int head, float val) {
+  ContextData* d = GetContextData();
+  for (unsigned int i = 0; i < head && i < d->weights.size(); ++i) {
+    d->weights[i] = val;
+  }
+}
+
 void Mixer::Perceive(int bit) {
-  ContextData* data = GetContextData();
+  ContextData* data = current_data_ ? current_data_ : GetContextData();
+  current_data_ = nullptr;
   float decay = 0.9 / pow(0.0000001 * steps_ + 0.8, 0.8);
   decay *= 1.5 - ((1.0 * data->steps) / max_steps_);
 
@@ -151,7 +171,9 @@ void Mixer::Perceive(int bit) {
   }
   if (row_decay > decay) decay = row_decay;
 
-  float update = decay * learning_rate_ * (Sigmoid::Logistic(p_) - bit);
+  float err = e2e_use_ ? e2e_err_ : (Sigmoid::Logistic(p_) - bit);
+  e2e_use_ = false;
+  float update = decay * learning_rate_ * err;
   ++steps_;
   ++data->steps;
   if (data->steps > max_steps_) {

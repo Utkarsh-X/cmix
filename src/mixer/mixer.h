@@ -21,6 +21,11 @@ class Mixer {
       float learning_rate, unsigned int extra_input_size);
   float Mix();
   void Perceive(int bit);
+  float E2EP() const { return p_; }
+  const float* E2EWRow();
+  const float* E2EXRow();
+  void E2ESetErr(float e) { e2e_err_ = e; e2e_use_ = true; }
+  void E2ESeedHead(unsigned int head, float val);
 
  private:
   ContextData* GetContextData();
@@ -31,6 +36,9 @@ class Mixer {
   const unsigned long long& context_;
   unsigned long long max_steps_, steps_;
   std::unordered_map<unsigned int, std::unique_ptr<ContextData>> context_map_;
+  float e2e_err_ = 0.0f;
+  bool e2e_use_ = false;
+  ContextData* current_data_ = nullptr;
 };
 
 #endif

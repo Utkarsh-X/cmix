@@ -38,6 +38,7 @@ class Predictor {
   void AddMatch();
   void AddDoubleIndirect();
   void AddMixers();
+  void E2EGrad(int bit);
 
   std::vector<std::unique_ptr<Model>> models_;
   std::vector<std::unique_ptr<ByteModel>> byte_models_;

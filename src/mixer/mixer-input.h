@@ -16,6 +16,8 @@ class MixerInput {
   void ClearExtraInputs() { extra_inputs_.clear(); }
   const std::valarray<float>& Inputs() const { return inputs_; }
   const std::vector<float>& ExtraInputs() const { return extra_inputs_; }
+  float StretchedMin() const { return stretched_min_; }
+  float StretchedMax() const { return stretched_max_; }
 
  private:
   std::valarray<float> inputs_;
