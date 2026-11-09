@@ -137,6 +137,20 @@ void Mixer::Perceive(int bit) {
   ContextData* data = GetContextData();
   float decay = 0.9 / pow(0.0000001 * steps_ + 0.8, 0.8);
   decay *= 1.5 - ((1.0 * data->steps) / max_steps_);
+
+  // Per-Row Learning rate adaptation (PRL)
+  float row_decay = 0.15f;
+  if (data->steps < 25000) {
+    row_decay = 0.3f;
+    if (data->steps < 5000) {
+      row_decay = 0.7f;
+      if (data->steps < 1000) {
+        row_decay = 1.0f;
+      }
+    }
+  }
+  if (row_decay > decay) decay = row_decay;
+
   float update = decay * learning_rate_ * (Sigmoid::Logistic(p_) - bit);
   ++steps_;
   ++data->steps;

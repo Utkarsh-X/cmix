@@ -82,7 +82,7 @@ void Predictor::AddFXCM() {
 }
 
 void Predictor::AddPAQ8() {
-  PAQ8* paq = new PAQ8(11);
+  PAQ8* paq = new PAQ8(9);
   AddModel(paq);
   AddAuxiliary();
 }
@@ -98,7 +98,7 @@ void Predictor::AddBracket() {
 }
 
 void Predictor::AddPPMD() {
-  AddByteModel(new PPMD::PPMD(25, 14000, manager_.bit_context_, vocab_));
+  AddByteModel(new PPMD::PPMD(25, 2048, manager_.bit_context_, vocab_));
 }
 
 void Predictor::AddWord() {
