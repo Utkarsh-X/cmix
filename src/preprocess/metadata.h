@@ -34,12 +34,18 @@ class StreamingDecoder {
 
  private:
   bool Fill();
+  bool StartsWith(const std::string& prefix) const;
+  bool SubstrEquals(size_t offset, const std::string& str) const;
+  void Consume(size_t n);
+  void PushString(const std::string& s);
 
   preprocessor::Dictionary* dict_;
   FILE* in_;
   int flags_;
   unsigned long long prev_id_;
   bool first_byte_;
+  bool eof_;
+  std::deque<char> window_;
   std::deque<int> buf_;
 };
 
