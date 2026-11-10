@@ -54,13 +54,14 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
 
     // EXP-038: Contributor & Revision Schema Compaction
     ReplaceAll(s, "\n    <revision>\n      <id>", "\n<revision><id>");
-    ReplaceAll(s, "\n      <contributor>\n        <username>", "\n<username>");
+    // EXP-045: Eliminate intra-schema boundary newlines
+    ReplaceAll(s, "\n      <contributor>\n        <username>", "<username>");
     ReplaceAll(s, "</username>\n        <id>", "</username><id>");
     ReplaceAll(s, "</id>\n      </contributor>", "</id></contributor>");
-    ReplaceAll(s, "\n      <contributor>\n        <ip>", "\n<ip>");
+    ReplaceAll(s, "\n      <contributor>\n        <ip>", "<ip>");
     ReplaceAll(s, "</ip>\n      </contributor>", "</ip></contributor>");
-    ReplaceAll(s, "\n      <minor />", "\n<minor>");
-    ReplaceAll(s, "\n      <comment>", "\n<comment>");
+    ReplaceAll(s, "\n      <minor />", "<minor>");
+    ReplaceAll(s, "\n      <comment>", "<comment>");
 
     // EXP-039: Strip \n      indentation before <timestamp>
     ReplaceAll(s, "</id>\n      <timestamp>", "</id><timestamp>");
@@ -358,6 +359,29 @@ bool StreamingDecoder::Fill() {
       PushString("</username>\n        <id>");
       return true;
     }
+    // EXP-045: Compact schema tokens (without leading newline)
+    if (StartsWith("<username>")) {
+      Consume(10);
+      PushString("\n      <contributor>\n        <username>");
+      return true;
+    }
+    if (StartsWith("<ip>")) {
+      Consume(4);
+      PushString("\n      <contributor>\n        <ip>");
+      return true;
+    }
+    if (StartsWith("<minor>")) {
+      Consume(7);
+      PushString("\n      <minor />");
+      return true;
+    }
+    if (StartsWith("<comment>")) {
+      Consume(9);
+      PushString("\n      <comment>");
+      return true;
+    }
+
+    // Fallbacks with leading newline
     if (StartsWith("\n<username>")) {
       Consume(11);
       PushString("\n      <contributor>\n        <username>");
