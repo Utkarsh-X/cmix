@@ -34,7 +34,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   size_t n_read = fread(&s[0], 1, len, in);
   s.resize(n_read);
 
-  int count_id = 0, count_ts = 0, count_bp = 0;
+  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0;
 
   // 1. Header compaction (EXP-036)
   if ((flags & TRANSFORM_BOILERPLATE) && s.size() >= kMediaWikiHeaderLen &&
@@ -90,10 +90,13 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     }
   }
 
-  // 4. Page-ID Delta Encoding (EXP-032, EXP-039)
+  // 4. Page-ID Delta Encoding (EXP-032, EXP-039) & B1 Revision-ID Forecast (EXP-040)
   if (flags & TRANSFORM_PAGE_IDS) {
     size_t pos = 0;
     unsigned long long prev_id = 0;
+    unsigned long long last_b1_pid = 0;
+    unsigned long long last_b1_rid = 0;
+
     while ((pos = s.find("</title>", pos)) != std::string::npos) {
       size_t ws_start = pos + 8;
       size_t id_pos = ws_start;
@@ -114,6 +117,34 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
           s.replace(ws_start, (num_end + 5) - ws_start, repl);
           pos = ws_start + repl.size();
           ++count_id;
+
+          // EXP-040: B1 Revision-ID Compaction (< 17,000,000)
+          if (flags & TRANSFORM_REV_IDS) {
+            size_t next_page = s.find("<page>", pos);
+            size_t rev_pos = s.find("\n<revision><id>", pos);
+            if (rev_pos != std::string::npos && (next_page == std::string::npos || rev_pos < next_page)) {
+              size_t rid_start = rev_pos + 15;
+              size_t rid_end = rid_start;
+              while (rid_end < s.size() && s[rid_end] >= '0' && s[rid_end] <= '9') {
+                ++rid_end;
+              }
+              if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
+                unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
+                if (revid < 17000000ULL) {
+                  unsigned long long forecast = (last_b1_pid == 0) ? 15898943ULL : (last_b1_rid + (curr_id - last_b1_pid));
+                  long long res = static_cast<long long>(revid) - static_cast<long long>(forecast);
+                  last_b1_pid = curr_id;
+                  last_b1_rid = revid;
+                  std::string rev_repl;
+                  if (res == 0) rev_repl = "+";
+                  else rev_repl = "+" + std::to_string(res);
+                  s.replace(rid_start, rid_end - rid_start, rev_repl);
+                  pos = rid_start + rev_repl.size();
+                  ++count_rev;
+                }
+              }
+            }
+          }
           continue;
         }
       }
@@ -122,11 +153,11 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   }
 
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
-    : dict_(dict), in_(in), flags_(flags), prev_id_(0), first_byte_(true), eof_(false) {}
+    : dict_(dict), in_(in), flags_(flags), prev_id_(0), last_b1_pid_(0), last_b1_rid_(0), first_byte_(true), eof_(false) {}
 
 int StreamingDecoder::GetByte() {
   while (buf_.empty()) {
@@ -218,7 +249,37 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 3a. Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
+  // 3a. EXP-040: B1 Revision ID (\n<revision><id>+...)
+  if ((flags_ & TRANSFORM_REV_IDS) && StartsWith("\n<revision><id>+")) {
+    size_t end_tag = 16;
+    while (end_tag < window_.size() && window_[end_tag] != '<') ++end_tag;
+    if (end_tag + 5 <= window_.size() && SubstrEquals(end_tag, "</id>")) {
+      long long res = 0;
+      if (end_tag > 16) {
+        std::string res_str;
+        for (size_t i = 16; i < end_tag; ++i) res_str += window_[i];
+        res = std::stoll(res_str);
+      }
+      unsigned long long forecast = (last_b1_pid_ == 0) ? 15898943ULL : (last_b1_rid_ + (prev_id_ - last_b1_pid_));
+      unsigned long long revid = forecast + res;
+      last_b1_pid_ = prev_id_;
+      last_b1_rid_ = revid;
+
+      PushString("\n    <revision>\n      <id>");
+      PushString(std::to_string(revid));
+      Consume(end_tag);
+      return true;
+    }
+  }
+
+  // 3b. Standard revision tag
+  if ((flags_ & TRANSFORM_BOILERPLATE) && StartsWith("\n<revision><id>")) {
+    Consume(15);
+    PushString("\n    <revision>\n      <id>");
+    return true;
+  }
+
+  // 4a. Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
   if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>") && window_.size() >= 40 && SubstrEquals(28, "</timestamp>")) {
     bool is_num = true;
     for (size_t i = 16; i < 28; ++i) {
@@ -238,7 +299,7 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 3b. Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
+  // 4b. Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
   if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("<timestamp>") && window_.size() >= 35 && SubstrEquals(23, "</timestamp>")) {
     bool is_num = true;
     for (size_t i = 11; i < 23; ++i) {
@@ -258,7 +319,7 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 4. Boilerplate & Schema tokens
+  // 5. Boilerplate & Schema tokens
   if (flags_ & TRANSFORM_BOILERPLATE) {
     if (StartsWith("</text>\n<page><title>")) {
       Consume(21);
@@ -282,12 +343,6 @@ bool StreamingDecoder::Fill() {
       return true;
     }
 
-    // EXP-038: Contributor & Revision Schema Tokens
-    if (StartsWith("\n<revision><id>")) {
-      Consume(15);
-      PushString("\n    <revision>\n      <id>");
-      return true;
-    }
     if (StartsWith("</id></contributor>")) {
       Consume(19);
       PushString("</id>\n      </contributor>");

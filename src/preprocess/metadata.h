@@ -16,16 +16,17 @@ enum TransformFlags {
   TRANSFORM_PAGE_IDS = 1,
   TRANSFORM_TIMESTAMPS = 2,
   TRANSFORM_BOILERPLATE = 4,
-  TRANSFORM_ALL = (TRANSFORM_PAGE_IDS | TRANSFORM_TIMESTAMPS | TRANSFORM_BOILERPLATE)
+  TRANSFORM_REV_IDS = 8,
+  TRANSFORM_ALL = (TRANSFORM_PAGE_IDS | TRANSFORM_TIMESTAMPS | TRANSFORM_BOILERPLATE | TRANSFORM_REV_IDS)
 };
 
-// Transforms Wikipedia Metadata (Header compaction, Page-ID deltas, compact timestamps, and boilerplate tags).
+// Transforms Wikipedia Metadata (Header compaction, Page-ID deltas, B1 Rev-ID forecast, compact timestamps, and boilerplate tags).
 // Writes the transformed text stream to `out`.
 // Returns true if any metadata was transformed; false if no Wikipedia metadata found.
 bool Transform(FILE* in, int len, FILE* out, int flags = TRANSFORM_ALL);
 
 // Streaming decoder that wraps a stream source (Dictionary or FILE)
-// and dynamically expands header, delta Page-IDs, compact timestamps, and boilerplate tags back to canonical text.
+// and dynamically expands header, delta Page-IDs, B1 Rev-IDs, compact timestamps, and boilerplate tags back to canonical text.
 class StreamingDecoder {
  public:
   StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags = TRANSFORM_ALL);
@@ -43,6 +44,8 @@ class StreamingDecoder {
   FILE* in_;
   int flags_;
   unsigned long long prev_id_;
+  unsigned long long last_b1_pid_;
+  unsigned long long last_b1_rid_;
   bool first_byte_;
   bool eof_;
   std::deque<char> window_;
