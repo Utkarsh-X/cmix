@@ -464,7 +464,7 @@ void encode_text(FILE* in, FILE* out, int len, std::string temp_path,
   FILE* text_in = in;
   int orig_pos = ftell(in);
   if (meta_out) {
-    meta_applied = metadata::Transform(in, len, meta_out, metadata::TRANSFORM_PAGE_IDS);
+    meta_applied = metadata::Transform(in, len, meta_out, metadata::TRANSFORM_ALL);
     if (meta_applied) {
       text_len = ftell(meta_out);
       rewind(meta_out);
@@ -516,7 +516,7 @@ void reset_text_decoder(FILE* in, FILE* dictionary) {
   if (c == 2) {
     wrt_enabled = true;
     if (dict == NULL) dict = new Dictionary(dictionary, false, true);
-    meta_decoder = new metadata::StreamingDecoder(dict, in, metadata::TRANSFORM_PAGE_IDS);
+    meta_decoder = new metadata::StreamingDecoder(dict, in, metadata::TRANSFORM_ALL);
   } else if (c == 1) {
     wrt_enabled = true;
     if (dict == NULL) dict = new Dictionary(dictionary, false, true);
