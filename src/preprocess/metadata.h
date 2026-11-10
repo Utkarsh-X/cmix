@@ -1,0 +1,48 @@
+#ifndef METADATA_H_
+#define METADATA_H_
+
+#include <stdio.h>
+#include <deque>
+#include <string>
+
+namespace preprocessor {
+class Dictionary;
+}
+
+namespace metadata {
+
+enum TransformFlags {
+  TRANSFORM_NONE = 0,
+  TRANSFORM_PAGE_IDS = 1,
+  TRANSFORM_TIMESTAMPS = 2,
+  TRANSFORM_ALL = (TRANSFORM_PAGE_IDS | TRANSFORM_TIMESTAMPS)
+};
+
+// Transforms Wikipedia Metadata (Page-ID deltas and/or compact timestamps).
+// Writes the transformed text stream to `out`.
+// Returns true if any metadata was transformed; false if no Wikipedia metadata found.
+bool Transform(FILE* in, int len, FILE* out, int flags = TRANSFORM_ALL);
+
+// Streaming decoder that wraps a stream source (Dictionary or FILE)
+// and dynamically expands delta Page-IDs and compact timestamps back to canonical text.
+class StreamingDecoder {
+ public:
+  StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags = TRANSFORM_ALL);
+
+  int GetByte();
+
+ private:
+  bool Fill();
+
+  preprocessor::Dictionary* dict_;
+  FILE* in_;
+  int flags_;
+  unsigned long long prev_id_;
+  size_t title_match_;
+  size_t ts_match_;
+  std::deque<int> buf_;
+};
+
+}  // namespace metadata
+
+#endif  // METADATA_H_

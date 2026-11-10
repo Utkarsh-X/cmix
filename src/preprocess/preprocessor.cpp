@@ -6,6 +6,7 @@
 
 #include "preprocessor.h"
 #include "dictionary.h"
+#include "metadata.h"
 
 namespace preprocessor {
 
@@ -455,13 +456,33 @@ void encode_text(FILE* in, FILE* out, int len, std::string temp_path,
     encode_default(in, out, len);
     return;
   }
+
+  std::string meta_path = temp_path + ".meta";
+  FILE* meta_out = fopen(meta_path.c_str(), "wb+");
+  bool meta_applied = false;
+  int text_len = len;
+  FILE* text_in = in;
+  int orig_pos = ftell(in);
+  if (meta_out) {
+    meta_applied = metadata::Transform(in, len, meta_out, metadata::TRANSFORM_PAGE_IDS);
+    if (meta_applied) {
+      text_len = ftell(meta_out);
+      rewind(meta_out);
+      text_in = meta_out;
+    } else {
+      fclose(meta_out);
+      meta_out = NULL;
+      remove(meta_path.c_str());
+      fseek(in, orig_pos, SEEK_SET);
+    }
+  }
+
   std::string path = temp_path + "2";
   FILE* temp_output = fopen(path.c_str(), "wb+");
   if (!temp_output) abort();
-  int orig_pos = ftell(in);
 
   Dictionary dict(dictionary, true, false);
-  dict.Encode(in, len, temp_output);
+  dict.Encode(text_in, text_len, temp_output);
 
   int size = ftell(temp_output);
   if (size > len - 50) {
@@ -469,21 +490,34 @@ void encode_text(FILE* in, FILE* out, int len, std::string temp_path,
     fseek(in, orig_pos, SEEK_SET);
     encode_default(in, out, len);
   } else {
-    putc(1, out);
+    putc(meta_applied ? 2 : 1, out);
     rewind(temp_output);
     encode_default(temp_output, out, size);
   }
 
   fclose(temp_output);
   remove(path.c_str());
+  if (meta_out) {
+    fclose(meta_out);
+    remove(meta_path.c_str());
+  }
 }
 
 Dictionary* dict = NULL;
 bool wrt_enabled = true;
+metadata::StreamingDecoder* meta_decoder = NULL;
 
 void reset_text_decoder(FILE* in, FILE* dictionary) {
   int c = getc(in);
-  if (c) {
+  if (meta_decoder != NULL) {
+    delete meta_decoder;
+    meta_decoder = NULL;
+  }
+  if (c == 2) {
+    wrt_enabled = true;
+    if (dict == NULL) dict = new Dictionary(dictionary, false, true);
+    meta_decoder = new metadata::StreamingDecoder(dict, in, metadata::TRANSFORM_PAGE_IDS);
+  } else if (c == 1) {
     wrt_enabled = true;
     if (dict == NULL) dict = new Dictionary(dictionary, false, true);
   } else {
@@ -492,6 +526,7 @@ void reset_text_decoder(FILE* in, FILE* dictionary) {
 }
 
 int decode_text(FILE* in) {
+  if (meta_decoder != NULL) return meta_decoder->GetByte();
   if (!wrt_enabled) return getc(in);
   return dict->Decode(in);
 }
@@ -641,7 +676,14 @@ void Decode(FILE* in, FILE* out, FILE* dictionary) {
       if (buf_pos > 0) {
         fwrite(buf, 1, buf_pos, out);
       }
-      if (dict != NULL) delete dict;
+      if (meta_decoder != NULL) {
+        delete meta_decoder;
+        meta_decoder = NULL;
+      }
+      if (dict != NULL) {
+        delete dict;
+        dict = NULL;
+      }
       return;
     }
     buf[buf_pos++] = static_cast<char>(result);
