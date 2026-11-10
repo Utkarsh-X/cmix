@@ -6,15 +6,37 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <deque>
 
 namespace metadata {
 
-bool Transform(FILE* in, int len, FILE* out, int flags) {
-  unsigned long long prev_id = 0;
-  int c;
-  int pos = 0;
-  int count_id = 0, count_ts = 0, count_bp = 0;
+const size_t kMediaWikiHeaderLen = 1406;
+const char* kMediaWikiHeader = "<mediawiki xmlns=\"http://www.mediawiki.org/xml/export-0.3/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.mediawiki.org/xml/export-0.3/ http://www.mediawiki.org/xml/export-0.3.xsd\" version=\"0.3\" xml:lang=\"en\">\n  <siteinfo>\n    <sitename>Wikipedia</sitename>\n    <base>http://en.wikipedia.org/wiki/Main_Page</base>\n    <generator>MediaWiki 1.6alpha</generator>\n    <case>first-letter</case>\n      <namespaces>\n      <namespace key=\"-2\">Media</namespace>\n      <namespace key=\"-1\">Special</namespace>\n      <namespace key=\"0\" />\n      <namespace key=\"1\">Talk</namespace>\n      <namespace key=\"2\">User</namespace>\n      <namespace key=\"3\">User talk</namespace>\n      <namespace key=\"4\">Wikipedia</namespace>\n      <namespace key=\"5\">Wikipedia talk</namespace>\n      <namespace key=\"6\">Image</namespace>\n      <namespace key=\"7\">Image talk</namespace>\n      <namespace key=\"8\">MediaWiki</namespace>\n      <namespace key=\"9\">MediaWiki talk</namespace>\n      <namespace key=\"10\">Template</namespace>\n      <namespace key=\"11\">Template talk</namespace>\n      <namespace key=\"12\">Help</namespace>\n      <namespace key=\"13\">Help talk</namespace>\n      <namespace key=\"14\">Category</namespace>\n      <namespace key=\"15\">Category talk</namespace>\n      <namespace key=\"100\">Portal</namespace>\n      <namespace key=\"101\">Portal talk</namespace>\n    </namespaces>\n  </siteinfo>\n  ";
 
+const char* kCompactHeader = "<mediawiki>\n  ";
+const size_t kCompactHeaderLen = 14;
+
+bool Transform(FILE* in, int len, FILE* out, int flags) {
+  int pos = 0;
+  int c;
+  int count_id = 0, count_ts = 0, count_bp = 0;
+  unsigned long long prev_id = 0;
+
+  // 1. Check if stream begins with MediaWiki export header
+  if (flags & TRANSFORM_BOILERPLATE) {
+    char h_buf[kMediaWikiHeaderLen + 1];
+    size_t h_read = fread(h_buf, 1, kMediaWikiHeaderLen, in);
+    pos += (int)h_read;
+
+    if (h_read == kMediaWikiHeaderLen && memcmp(h_buf, kMediaWikiHeader, kMediaWikiHeaderLen) == 0) {
+      fputs(kCompactHeader, out);
+      ++count_bp;
+    } else {
+      for (size_t i = 0; i < h_read; ++i) putc(h_buf[i], out);
+    }
+  }
+
+  // 2. Stream through remaining content (EXP-035 foundation)
   while (pos < len && (c = getc(in)) != EOF) {
     ++pos;
 
@@ -182,7 +204,6 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
         }
       }
 
-      // None of the tags matched, emit buffered tag_buf
       fputs(tag_buf.c_str(), out);
       continue;
     }
@@ -193,7 +214,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
-    : dict_(dict), in_(in), flags_(flags), prev_id_(0) {}
+    : dict_(dict), in_(in), flags_(flags), prev_id_(0), first_byte_(true) {}
 
 int StreamingDecoder::GetByte() {
   while (buf_.empty()) {
@@ -209,6 +230,27 @@ bool StreamingDecoder::Fill() {
     if (dict_ != NULL) return dict_->Decode(in_);
     return getc(in_);
   };
+
+  // Header expansion at start of stream
+  if (first_byte_) {
+    first_byte_ = false;
+    if (flags_ & TRANSFORM_BOILERPLATE) {
+      char h_buf[15];
+      size_t hn = 0;
+      int c;
+      while (hn < 14 && (c = next_byte()) != EOF) {
+        h_buf[hn++] = static_cast<char>(c);
+      }
+      if (hn == 14 && memcmp(h_buf, "<mediawiki>\n  ", 14) == 0) {
+        for (size_t i = 0; i < kMediaWikiHeaderLen; ++i) buf_.push_back(kMediaWikiHeader[i]);
+        return true;
+      } else {
+        for (size_t i = 0; i < hn; ++i) buf_.push_back(h_buf[i]);
+        if (hn == 0) return false;
+        return true;
+      }
+    }
+  }
 
   int c = next_byte();
   if (c == EOF) return false;
