@@ -362,7 +362,7 @@ int wfgets(char *str, int count, FILE  *fp) {
     return i;
 }
 char *s;
-char *dictW[44516];
+char *dictW[65536];
 int codeword2sym[256]; 
 int dict1size=80;
 int dict2size=32;
@@ -373,10 +373,11 @@ void loaddict(FILE  *file){
     int line_count=0,len=0;
     s=(char *)malloc(8192*8);
     while ((len=wfgets(s, 8192*8, file)) )  {
-        dictW[line_count]=(char *)malloc(len);
-        memcpy(dictW[line_count],  s, len);
-        //printf("%d,%s\n",len,dictW[line_count]);
-        line_count++;
+        if (line_count < 65536) {
+            dictW[line_count]=(char *)malloc(len);
+            memcpy(dictW[line_count],  s, len);
+            line_count++;
+        }
     }
     fclose(file);
     free(s);
@@ -400,6 +401,10 @@ inline int decodeCodeWord(int cw) {
         return i+dict1size;
     }
 
+    if (c >= 0xF0) {
+        return 44880 + ((cw&255)-0xF0)*1280 + (c-0xF0)*80
+               + (((cw>>16)&255)-0x80);
+    }
     i=(i-dict12size)*dict2size;
     i+=dict1size*(codeword2sym[c]-dict1size);
 
