@@ -18,6 +18,13 @@ unsigned int Decoder::Discretize(float p) {
 }
 
 int Decoder::Decode() {
+  const int forced = p_->ChrForced();
+  if (forced) {
+    p_->Predict();
+    const int bit = (forced > 0) ? 1 : 0;
+    p_->Perceive(bit);
+    return bit;
+  }
   const unsigned int p = Discretize(p_->Predict());
   const unsigned int xmid = x1_ + ((x2_ - x1_) >> 16) * p +
       (((x2_ - x1_) & 0xffff) * p >> 16);

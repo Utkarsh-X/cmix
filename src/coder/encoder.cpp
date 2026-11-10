@@ -12,6 +12,11 @@ unsigned int Encoder::Discretize(float p) {
 }
 
 void Encoder::Encode(int bit) {
+  if (p_->ChrForced()) {
+    p_->Predict();
+    p_->Perceive(bit);
+    return;
+  }
   const unsigned int p = Discretize(p_->Predict());
   const unsigned int xmid = x1_ + ((x2_ - x1_) >> 16) * p +
       (((x2_ - x1_) & 0xffff) * p >> 16);

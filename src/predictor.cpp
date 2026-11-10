@@ -24,6 +24,7 @@
 Predictor::Predictor(const std::vector<bool>& vocab) : manager_(),
     sigmoid_(100001), vocab_(vocab) {
   srand(0xDEADBEEF);
+  char_rate::Init(vocab_);
 
   AddBracket();
   AddFXCM();

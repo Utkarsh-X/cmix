@@ -9,6 +9,7 @@
 #include "models/model.h"
 #include "models/byte-model.h"
 #include "context-manager.h"
+#include "char_rate.h"
 
 #include <vector>
 #include <set>
@@ -20,6 +21,7 @@ class Predictor {
   float Predict();
   void Perceive(int bit);
   void Pretrain(int bit);
+  int ChrForced() const { return char_rate::Forced(manager_.bit_context_); }
 
  private:
   unsigned long long GetNumModels();
