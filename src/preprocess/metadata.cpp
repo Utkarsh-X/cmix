@@ -1,12 +1,11 @@
 #include "metadata.h"
 #include "dictionary.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
-#include <deque>
 
 namespace metadata {
 
@@ -44,10 +43,13 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     ++count_bp;
   }
 
-  // 2. XML Boilerplate & Inter-page transition (EXP-035)
+  // 2. XML Boilerplate & Inter-page transition (EXP-035, EXP-038, EXP-039)
   if (flags & TRANSFORM_BOILERPLATE) {
     ReplaceAll(s, "<text>", "<text_lit>");
-    ReplaceAll(s, "<text xml:space=\"preserve\">", "<text>");
+    // EXP-039: Strip \n      indentation before <text xml:space="preserve">
+    ReplaceAll(s, "\n      <text xml:space=\"preserve\">", "<text>");
+    ReplaceAll(s, "<text xml:space=\"preserve\">", "<text_fallback>");
+
     ReplaceAll(s, "</text>\n    </revision>\n  </page>\n  <page>\n    <title>", "</text>\n<page><title>");
 
     // EXP-038: Contributor & Revision Schema Compaction
@@ -59,6 +61,9 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     ReplaceAll(s, "</ip>\n      </contributor>", "</ip></contributor>");
     ReplaceAll(s, "\n      <minor />", "\n<minor>");
     ReplaceAll(s, "\n      <comment>", "\n<comment>");
+
+    // EXP-039: Strip \n      indentation before <timestamp>
+    ReplaceAll(s, "</id>\n      <timestamp>", "</id><timestamp>");
     ++count_bp;
   }
 
@@ -85,7 +90,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     }
   }
 
-  // 4. Page-ID Delta Encoding (EXP-032)
+  // 4. Page-ID Delta Encoding (EXP-032, EXP-039)
   if (flags & TRANSFORM_PAGE_IDS) {
     size_t pos = 0;
     unsigned long long prev_id = 0;
@@ -105,9 +110,9 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
           unsigned long long curr_id = std::stoull(s.substr(num_start, num_end - num_start));
           unsigned long long delta = curr_id - prev_id;
           prev_id = curr_id;
-          std::string delta_str = std::to_string(delta);
-          s.replace(num_start, num_end - num_start, delta_str);
-          pos = num_start + delta_str.size() + 5;
+          std::string repl = "<id>" + std::to_string(delta) + "</id>";
+          s.replace(ws_start, (num_end + 5) - ws_start, repl);
+          pos = ws_start + repl.size();
           ++count_id;
           continue;
         }
@@ -138,7 +143,7 @@ bool StreamingDecoder::Fill() {
     return getc(in_);
   };
 
-  while (window_.size() < 35 && !eof_) {
+  while (window_.size() < 48 && !eof_) {
     int c = next_byte();
     if (c == EOF) {
       eof_ = true;
@@ -159,7 +164,30 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 2. Page-ID Delta
+  // 2. Page-ID Delta (EXP-039 compact: </title><id>delta</id>)
+  if ((flags_ & TRANSFORM_PAGE_IDS) && StartsWith("</title><id>")) {
+    size_t num_start = 12;
+    size_t num_end = num_start;
+    while (num_end < window_.size() && window_[num_end] >= '0' && window_[num_end] <= '9') {
+      ++num_end;
+    }
+    if (num_end + 5 <= window_.size() && SubstrEquals(num_end, "</id>")) {
+      std::string delta_str;
+      for (size_t i = num_start; i < num_end; ++i) delta_str += window_[i];
+      unsigned long long delta = std::stoull(delta_str);
+      unsigned long long curr_id = prev_id_ + delta;
+      prev_id_ = curr_id;
+
+      PushString("</title>\n    <id>");
+      PushString(std::to_string(curr_id));
+      PushString("</id>");
+
+      Consume(num_end + 5);
+      return true;
+    }
+  }
+
+  // Fallback for Page-ID Delta with original whitespace (if any)
   if ((flags_ & TRANSFORM_PAGE_IDS) && StartsWith("</title>")) {
     size_t pos = 8;
     while (pos < window_.size() && (window_[pos] == ' ' || window_[pos] == '\t' || window_[pos] == '\r' || window_[pos] == '\n')) {
@@ -190,7 +218,27 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 3. Timestamp (12 digits)
+  // 3a. Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
+  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>") && window_.size() >= 40 && SubstrEquals(28, "</timestamp>")) {
+    bool is_num = true;
+    for (size_t i = 16; i < 28; ++i) {
+      if (window_[i] < '0' || window_[i] > '9') { is_num = false; break; }
+    }
+    if (is_num) {
+      std::string ts = "</id>\n      <timestamp>20";
+      ts += window_[16]; ts += window_[17]; ts += '-';
+      ts += window_[18]; ts += window_[19]; ts += '-';
+      ts += window_[20]; ts += window_[21]; ts += 'T';
+      ts += window_[22]; ts += window_[23]; ts += ':';
+      ts += window_[24]; ts += window_[25]; ts += ':';
+      ts += window_[26]; ts += window_[27]; ts += "Z</timestamp>";
+      Consume(40);
+      PushString(ts);
+      return true;
+    }
+  }
+
+  // 3b. Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
   if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("<timestamp>") && window_.size() >= 35 && SubstrEquals(23, "</timestamp>")) {
     bool is_num = true;
     for (size_t i = 11; i < 23; ++i) {
@@ -217,8 +265,14 @@ bool StreamingDecoder::Fill() {
       PushString("</text>\n    </revision>\n  </page>\n  <page>\n    <title>");
       return true;
     }
+    // EXP-039: Compact <text> restores \n      <text xml:space="preserve">
     if (StartsWith("<text>")) {
       Consume(6);
+      PushString("\n      <text xml:space=\"preserve\">");
+      return true;
+    }
+    if (StartsWith("<text_fallback>")) {
+      Consume(15);
       PushString("<text xml:space=\"preserve\">");
       return true;
     }
