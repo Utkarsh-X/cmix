@@ -13,20 +13,22 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   unsigned long long prev_id = 0;
   int c;
   int pos = 0;
-  int count_id = 0, count_ts = 0;
-  const std::string title_tag = "</title>";
-  const std::string ts_tag = "<timestamp>";
-  size_t title_match = 0;
-  size_t ts_match = 0;
+  int count_id = 0, count_ts = 0, count_bp = 0;
 
   while (pos < len && (c = getc(in)) != EOF) {
     ++pos;
 
-    // 1. Check for <timestamp>
-    if ((flags & TRANSFORM_TIMESTAMPS) && c == ts_tag[ts_match]) {
-      ++ts_match;
-      if (ts_match == ts_tag.size()) {
-        ts_match = 0;
+    if (c == '<') {
+      std::string tag_buf;
+      tag_buf += '<';
+      while (pos < len && tag_buf.size() < 40 && (c = getc(in)) != EOF) {
+        ++pos;
+        tag_buf += static_cast<char>(c);
+        if (c == '>') break;
+      }
+
+      // 1. Check for <timestamp>
+      if ((flags & TRANSFORM_TIMESTAMPS) && tag_buf == "<timestamp>") {
         char ts_buf[20];
         int read_n = 0;
         while (read_n < 20 && pos < len && (c = getc(in)) != EOF) {
@@ -67,22 +69,47 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
           continue;
         }
       }
-      continue;
-    } else {
-      if (ts_match > 0) {
-        for (size_t i = 0; i < ts_match; ++i) putc(ts_tag[i], out);
-        ts_match = (c == ts_tag[0]) ? 1 : 0;
-        if (ts_match > 0) continue;
+
+      // 2. Check for <text xml:space="preserve">
+      if ((flags & TRANSFORM_BOILERPLATE) && tag_buf == "<text xml:space=\"preserve\">") {
+        fputs("<text>", out);
+        ++count_bp;
+        continue;
       }
-    }
+      if ((flags & TRANSFORM_BOILERPLATE) && tag_buf == "<text>") {
+        fputs("<text_lit>", out);
+        continue;
+      }
 
-    putc(c, out);
+      // 3. Check for </text> followed by page boundary
+      if ((flags & TRANSFORM_BOILERPLATE) && tag_buf == "</text>") {
+        const std::string boundary = "\n    </revision>\n  </page>\n  <page>\n    <title>";
+        char b_buf[55];
+        int bn = 0;
+        while (bn < (int)boundary.size() && pos < len && (c = getc(in)) != EOF) {
+          ++pos;
+          b_buf[bn++] = static_cast<char>(c);
+        }
+        if (bn == (int)boundary.size() && strncmp(b_buf, boundary.c_str(), boundary.size()) == 0) {
+          fputs("</text>\n<page><title>", out);
+          ++count_bp;
+          continue;
+        } else {
+          const std::string comp = "\n<page><title>";
+          if (bn >= (int)comp.size() && strncmp(b_buf, comp.c_str(), comp.size()) == 0) {
+            fputs("</text>\n<page_lit><title>", out);
+            for (int i = (int)comp.size(); i < bn; ++i) putc(b_buf[i], out);
+            continue;
+          }
+          fputs("</text>", out);
+          for (int i = 0; i < bn; ++i) putc(b_buf[i], out);
+          continue;
+        }
+      }
 
-    // 2. Check for </title>
-    if ((flags & TRANSFORM_PAGE_IDS) && c == title_tag[title_match]) {
-      ++title_match;
-      if (title_match == title_tag.size()) {
-        title_match = 0;
+      // 4. Check for </title>
+      if ((flags & TRANSFORM_PAGE_IDS) && tag_buf == "</title>") {
+        fputs("</title>", out);
         std::vector<int> ws;
         while (pos < len && (c = getc(in)) != EOF) {
           ++pos;
@@ -154,15 +181,19 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
           continue;
         }
       }
-    } else {
-      title_match = (c == title_tag[0]) ? 1 : 0;
+
+      // None of the tags matched, emit buffered tag_buf
+      fputs(tag_buf.c_str(), out);
+      continue;
     }
+
+    putc(c, out);
   }
-  return (count_id > 0 || count_ts > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
-    : dict_(dict), in_(in), flags_(flags), prev_id_(0), title_match_(0), ts_match_(0) {}
+    : dict_(dict), in_(in), flags_(flags), prev_id_(0) {}
 
 int StreamingDecoder::GetByte() {
   while (buf_.empty()) {
@@ -182,19 +213,19 @@ bool StreamingDecoder::Fill() {
   int c = next_byte();
   if (c == EOF) return false;
 
-  const std::string ts_tag = "<timestamp>";
-  const std::string title_tag = "</title>";
+  if (c == '<') {
+    std::string tag_buf;
+    tag_buf += '<';
+    while (tag_buf.size() < 40 && (c = next_byte()) != EOF) {
+      tag_buf += static_cast<char>(c);
+      if (c == '>') break;
+    }
 
-  // 1. Check for <timestamp>
-  if ((flags_ & TRANSFORM_TIMESTAMPS) && c == ts_tag[ts_match_]) {
-    ++ts_match_;
-    if (ts_match_ == ts_tag.size()) {
-      ts_match_ = 0;
+    // 1. Check for <timestamp>
+    if ((flags_ & TRANSFORM_TIMESTAMPS) && tag_buf == "<timestamp>") {
       char ts_buf[12];
       int read_n = 0;
-      while (read_n < 12) {
-        c = next_byte();
-        if (c == EOF) break;
+      while (read_n < 12 && (c = next_byte()) != EOF) {
         if (c >= '0' && c <= '9') {
           ts_buf[read_n++] = static_cast<char>(c);
         } else {
@@ -208,14 +239,13 @@ bool StreamingDecoder::Fill() {
       }
       if (c == '<') {
         end_buf[end_n++] = (char)c;
-        while (end_n < 12) {
-          c = next_byte();
-          if (c == EOF) break;
+        while (end_n < 12 && (c = next_byte()) != EOF) {
           end_buf[end_n++] = static_cast<char>(c);
         }
       }
       if (read_n == 12 && end_n == 12 && strncmp(end_buf, "</timestamp>", 12) == 0) {
-        for (char ch : ts_tag) buf_.push_back(ch);
+        const std::string open_ts = "<timestamp>";
+        for (char ch : open_ts) buf_.push_back(ch);
         buf_.push_back('2'); buf_.push_back('0');
         buf_.push_back(ts_buf[0]); buf_.push_back(ts_buf[1]); buf_.push_back('-');
         buf_.push_back(ts_buf[2]); buf_.push_back(ts_buf[3]); buf_.push_back('-');
@@ -227,31 +257,88 @@ bool StreamingDecoder::Fill() {
         for (char ch : end_ts) buf_.push_back(ch);
         return true;
       } else {
-        for (char ch : ts_tag) buf_.push_back(ch);
+        const std::string open_ts = "<timestamp>";
+        for (char ch : open_ts) buf_.push_back(ch);
         for (int i = 0; i < read_n; ++i) buf_.push_back(ts_buf[i]);
         for (int i = 0; i < end_n; ++i) buf_.push_back(end_buf[i]);
         return true;
       }
     }
-    return true;
-  } else {
-    if (ts_match_ > 0) {
-      for (size_t i = 0; i < ts_match_; ++i) buf_.push_back(ts_tag[i]);
-      ts_match_ = (c == ts_tag[0]) ? 1 : 0;
-      if (ts_match_ > 0) return true;
+
+    // 2. Check for <text> or <text_lit>
+    if ((flags_ & TRANSFORM_BOILERPLATE) && tag_buf == "<text>") {
+      const std::string expanded = "<text xml:space=\"preserve\">";
+      for (char ch : expanded) buf_.push_back(ch);
+      return true;
     }
-  }
+    if ((flags_ & TRANSFORM_BOILERPLATE) && tag_buf == "<text_lit>") {
+      const std::string lit = "<text>";
+      for (char ch : lit) buf_.push_back(ch);
+      return true;
+    }
 
-  buf_.push_back(c);
-
-  // 2. Check for </title>
-  if ((flags_ & TRANSFORM_PAGE_IDS) && c == title_tag[title_match_]) {
-    ++title_match_;
-    if (title_match_ == title_tag.size()) {
-      title_match_ = 0;
-      std::vector<int> ws;
-      while (true) {
+    // 3. Check for </text>
+    if ((flags_ & TRANSFORM_BOILERPLATE) && tag_buf == "</text>") {
+      const std::string close_text = "</text>";
+      for (char ch : close_text) buf_.push_back(ch);
+      
+      const std::string page_prefix = "\n<page";
+      char p_buf[6];
+      int pn = 0;
+      while (pn < 6 && (c = next_byte()) != EOF) {
+        p_buf[pn++] = static_cast<char>(c);
+      }
+      if (pn == 6 && strncmp(p_buf, page_prefix.c_str(), 6) == 0) {
         c = next_byte();
+        if (c == '>') {
+          char t_buf[7];
+          int tn = 0;
+          while (tn < 7 && (c = next_byte()) != EOF) {
+            t_buf[tn++] = static_cast<char>(c);
+          }
+          if (tn == 7 && strncmp(t_buf, "<title>", 7) == 0) {
+            const std::string boundary = "\n    </revision>\n  </page>\n  <page>\n    <title>";
+            for (char ch : boundary) buf_.push_back(ch);
+            return true;
+          } else {
+            for (char ch : page_prefix) buf_.push_back(ch);
+            buf_.push_back('>');
+            for (int i = 0; i < tn; ++i) buf_.push_back(t_buf[i]);
+            return true;
+          }
+        } else if (c == '_') {
+          char l_buf[11];
+          int ln = 0;
+          while (ln < 11 && (c = next_byte()) != EOF) {
+            l_buf[ln++] = static_cast<char>(c);
+          }
+          if (ln == 11 && strncmp(l_buf, "lit><title>", 11) == 0) {
+            const std::string comp = "\n<page><title>";
+            for (char ch : comp) buf_.push_back(ch);
+            return true;
+          } else {
+            for (char ch : page_prefix) buf_.push_back(ch);
+            buf_.push_back('_');
+            for (int i = 0; i < ln; ++i) buf_.push_back(l_buf[i]);
+            return true;
+          }
+        } else {
+          for (char ch : page_prefix) buf_.push_back(ch);
+          if (c != EOF) buf_.push_back(c);
+          return true;
+        }
+      } else {
+        for (int i = 0; i < pn; ++i) buf_.push_back(p_buf[i]);
+        return true;
+      }
+    }
+
+    // 4. Check for </title>
+    if ((flags_ & TRANSFORM_PAGE_IDS) && tag_buf == "</title>") {
+      const std::string title_tag = "</title>";
+      for (char ch : title_tag) buf_.push_back(ch);
+      std::vector<int> ws;
+      while ((c = next_byte()) != EOF) {
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
           ws.push_back(c);
         } else {
@@ -264,8 +351,7 @@ bool StreamingDecoder::Fill() {
         int c3 = next_byte();
         if (c1 == 'i' && c2 == 'd' && c3 == '>') {
           std::string delta_str;
-          while (true) {
-            c = next_byte();
+          while ((c = next_byte()) != EOF) {
             if (c >= '0' && c <= '9') {
               delta_str += static_cast<char>(c);
             } else {
@@ -323,10 +409,13 @@ bool StreamingDecoder::Fill() {
         return true;
       }
     }
+
+    // No match, push all buffered characters
+    for (char ch : tag_buf) buf_.push_back(ch);
     return true;
-  } else {
-    title_match_ = (c == title_tag[0]) ? 1 : 0;
   }
+
+  buf_.push_back(c);
   return true;
 }
 
