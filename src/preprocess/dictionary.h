@@ -13,13 +13,13 @@ class Dictionary {
  public:
   Dictionary(FILE* dictionary, bool encode, bool decode);
   void Encode(FILE* input, int len, FILE* output);
-  unsigned char Decode(FILE* input);
+  int Decode(FILE* input);
 
  private:
   void EncodeWord(const std::string& word, int num_upper, bool next_lower,
       FILE* output);
   bool EncodeSubstring(const std::string& word, FILE* output);
-  void AddToBuffer(FILE* input);
+  bool AddToBuffer(FILE* input);
 
   std::unordered_map<std::string, unsigned int> byte_map_;
   std::unordered_map<unsigned int, std::string> reverse_map_;

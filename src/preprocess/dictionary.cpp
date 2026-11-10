@@ -213,20 +213,25 @@ bool Dictionary::EncodeSubstring(const std::string& word, FILE* output) {
   return false;
 }
 
-unsigned char Dictionary::Decode(FILE* input) {
+int Dictionary::Decode(FILE* input) {
   while (output_buffer_.empty()) {
-    AddToBuffer(input);
+    if (!AddToBuffer(input)) return -1;
   }
   unsigned char next = output_buffer_.front();
   output_buffer_.pop_front();
   return next;
 }
 
-void Dictionary::AddToBuffer(FILE* input) {
-  unsigned char c = getc(input);
+bool Dictionary::AddToBuffer(FILE* input) {
+  int in_c = getc(input);
+  if (in_c == EOF) return false;
+  unsigned char c = static_cast<unsigned char>(in_c);
   if (c == kEscape) {
     decode_upper_ = false;
-    output_buffer_.push_back(getc(input));
+    int next_c = getc(input);
+    if (next_c != EOF) {
+      output_buffer_.push_back(static_cast<unsigned char>(next_c));
+    }
   } else if (c == kQuote) {
     for (int i = 1; i < 6; ++i) {
       output_buffer_.push_back(kQuoteStr[i]);
@@ -252,11 +257,17 @@ void Dictionary::AddToBuffer(FILE* input) {
   } else if (c >= 0x80) {
     unsigned int bytes = c;
     if (c > 0xCF) {
-      c = getc(input);
-      bytes += c << 8;
-      if (c > 0xCF) {
-        c = getc(input);
-        bytes += c << 16;
+      int next_c = getc(input);
+      if (next_c != EOF) {
+        c = static_cast<unsigned char>(next_c);
+        bytes += c << 8;
+        if (c > 0xCF) {
+          next_c = getc(input);
+          if (next_c != EOF) {
+            c = static_cast<unsigned char>(next_c);
+            bytes += c << 16;
+          }
+        }
       }
     }
     std::string word = reverse_map_[bytes];
@@ -280,6 +291,7 @@ void Dictionary::AddToBuffer(FILE* input) {
     if (decode_capital_) decode_capital_ = false;
     output_buffer_.push_back(c);
   }
+  return true;
 }
 
 }
