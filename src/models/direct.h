@@ -2,9 +2,7 @@
 #define DIRECT_H
 
 #include "model.h"
-
-#include <vector>
-#include <array>
+#include "direct-storage.h"
 
 class Direct : public Model {
  public:
@@ -19,8 +17,7 @@ class Direct : public Model {
   const unsigned int& bit_context_;
   int limit_;
   float delta_, divisor_;
-  std::vector<std::array<float, 256>> predictions_;
-  std::vector<std::array<unsigned char, 256>> counts_;
+  LazyDirectTable table_;
 };
 
 #endif
