@@ -42,6 +42,8 @@ typedef __m256i YMM;
 #endif
 #endif
 
+#include "../context_map_compact.h"
+
 extern const U8 wrt_2b[256];
 extern const U8 wrt_3b[256];
 extern int lstmpr, lstmex;
@@ -1427,7 +1429,8 @@ struct ContextMap2 {
   int cms,cms3,cms4;
   int kep;
   const U8 *nn;
-  E1<14,128> *ptr,*t;  // Double sized BH
+  typedef cm_compact::EKMC6<11, 5> CMBK;
+  CMBK *ptr,*t;  // Compact asymmetric BH (16 slots: 11 bit-0, 5 bit-2/5)
   U32 tmask;
   int skip2;
   U16 cxtMask;
@@ -1452,6 +1455,7 @@ void __attribute__ ((noinline)) Init(U32 m1, int c, int s3,const U8 *nn1,int cs4
     result=0;
     kep=k;
     alloc1(t,(m>>7)+64*2,ptr,128);  
+    assert(sizeof(CMBK)==128);
     nn=nn1;        
     int cmul=(c>>8)&255;          // run context mul value
     cms=(c>>16)&255;              // mix prediction mul value
@@ -1555,8 +1559,8 @@ int __attribute__ ((noinline))  mix() {
         mix4();
     } else {
     if (cp[i]) {
-      assert(cp[i]>=&t[0].bh[0][0] && cp[i]<=&t[tmask].bh[14][6]);
-      assert(((long long)(cp[i])&127)>=29);
+      assert(cp[i]>=&t[0].bh[0][0] && cp[i]<=&t[tmask].pad[127]);
+      assert(((long long)(cp[i])&127)>=16);
       *cp[i]=next(*cp[i], x.y);
     }
 
@@ -1565,25 +1569,25 @@ int __attribute__ ((noinline))  mix() {
     if ( x.bpos>1 && runp[i][0]==0) {
      cp[i]=0;
     } else {
-     U16 chksum=(cxt[i]>>16)^i;
+     const U32 chksum = cm_compact::chk_hash(cxt[i], i);
      
      if ( x.bpos){     
-       if ( x.bpos==2 ||  x.bpos==5)cp0[i]=cp[i]=t[(cxt[i]+x.c0)&tmask].get(chksum,kep);
+       if ( x.bpos==2 ||  x.bpos==5)cp0[i]=cp[i]=t[(cxt[i]+x.c0)&tmask].template get<1>(chksum,kep);
        else cp[i]=cp0[i]+getStateByteLocation( x.bpos,x.c0);
     } else {// default
-       cp0[i]=cp[i]=t[(cxt[i]+x.c0)&tmask].get(chksum,kep);
+       cp0[i]=cp[i]=t[(cxt[i]+x.c0)&tmask].template get<0>(chksum,kep);
        // Update pending bit histories for bits 2-7
        if (cp0[i][3]==2) {
          const int c=cp0[i][4]+256;
-         U8 *p=t[(cxt[i]+(c>>6))&tmask].get(chksum,kep);
+         U8 *p=t[(cxt[i]+(c>>6))&tmask].template get<1>(chksum,kep);
          p[0]=1+((c>>5)&1);
          p[1+((c>>5)&1)]=1+((c>>4)&1);
          p[3+((c>>4)&3)]=1+((c>>3)&1);
-         p=t[(cxt[i]+(c>>3))&tmask].get(chksum,kep);
+         p=t[(cxt[i]+(c>>3))&tmask].template get<1>(chksum,kep);
          p[0]=1+((c>>2)&1);
          p[1+((c>>2)&1)]=1+((c>>1)&1);
          p[3+((c>>1)&3)]=1+(c&1);
-         cp0[i][6]=0;
+         // Note: cp0[i][6]=0 omitted; p0 has 5 bytes (0..4) in EKMC6
        }
        const U8 c1=x.c4;
        // Update run count of previous context
