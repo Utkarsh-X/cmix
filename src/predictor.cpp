@@ -63,9 +63,11 @@ void Predictor::AddByteModel(ByteModel* model) {
 
 void Predictor::AddMixer(int layer, const unsigned long long& context,
     float learning_rate) {
+  // Asymmetric layer multipliers: 1.300x for Layer 0, 0.750x for Layer 1 (Ex-Girlfriend mixer_lr)
+  const float layer_gain = (layer == 1) ? 0.750f : 1.300f;
   mixers_[layer].push_back(std::unique_ptr<Mixer>(new Mixer(
       layers_[layer]->Inputs(), layers_[layer]->ExtraInputs(), context,
-      learning_rate, mixers_[layer].size())));
+      learning_rate * layer_gain, mixers_[layer].size())));
 }
 
 void Predictor::AddByteMixer(ByteMixer* byte_mixer) {

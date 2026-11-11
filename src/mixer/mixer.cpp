@@ -159,7 +159,7 @@ void Mixer::Perceive(int bit) {
   decay *= 1.5 - ((1.0 * data->steps) / max_steps_);
 
   // Per-Row Learning rate adaptation (PRL)
-  float row_decay = 0.15f;
+  float row_decay = 0.10f;  // Ex-Girlfriend mixdecay::kFinal = 0.100
   if (data->steps < 25000) {
     row_decay = 0.3f;
     if (data->steps < 5000) {
@@ -189,18 +189,23 @@ void Mixer::Perceive(int bit) {
     AvxWeightUpdate(&data->extra_weights[0], &extra_inputs_[0], update, ne);
   }
 
+  // Ex-Girlfriend optimization: disable periodic weight decay to preserve rare context weights
+  /*
   if ((data->steps & 1023) == 0) {
     AvxScale(&data->weights[0], 1.0f - 3.0e-6f, n);
     if (ne > 0) {
       AvxScale(&data->extra_weights[0], 1.0f - 3.0e-6f, ne);
     }
   }
+  */
 #else
   data->weights -= update * inputs_;
   data->extra_weights -= update * extra_inputs_;
+  /*
   if ((data->steps & 1023) == 0) {
     data->weights *= 1.0f - 3.0e-6f;
     data->extra_weights *= 1.0f - 3.0e-6f;
   }
+  */
 #endif
 }
