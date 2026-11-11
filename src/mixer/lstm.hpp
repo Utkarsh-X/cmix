@@ -1,3 +1,4 @@
+#define LSTM_NLMS 1
 #include "lstm.h"
 
 #include <numeric>
@@ -229,10 +230,23 @@ inline std::valarray<float>& Lstm::Perceive(unsigned int input) {
         // update lr*err(epoch-1) (x) h(epoch-1); h(epoch-1) is the hidden state
         // Predict copied into layer_input_[epoch] (bias input is constant 1)
         int pe = epoch - 1;
+#ifdef LSTM_NLMS
+        float h_pe_norm = 1.0f; // bias element is constant 1.0
+        for (unsigned int l = 0; l < layers_.size(); ++l) {
+          for (unsigned int c = 0; c < num_cells_; ++c) {
+            float v = layer_input_[epoch][l][input_size_ + c];
+            h_pe_norm += v * v;
+          }
+        }
+        const float pe_nlms_scale = 1.0f / (0.25f + (h_pe_norm / (float)hidden_.size()));
+        const float eff_lr_pe = LSTM_OUTPUT_LR_EFF * pe_nlms_scale;
+#else
+        const float eff_lr_pe = LSTM_OUTPUT_LR_EFF;
+#endif
         for (unsigned int i = 0; i < output_size_; ++i) {
           float err = output_[pe][i] -
               ((i == input_history_[pe]) ? 1.0f : 0.0f);
-          float s = LSTM_OUTPUT_LR_EFF * err;
+          float s = eff_lr_pe * err;
           for (unsigned int l = 0; l < layers_.size(); ++l) {
             for (unsigned int c = 0; c < num_cells_; ++c) {
               work_[i][l * num_cells_ + c] +=
@@ -252,16 +266,25 @@ inline std::valarray<float>& Lstm::Perceive(unsigned int input) {
 #endif
   }
 
+#ifdef LSTM_NLMS
+  float h_cur_norm = 0.0f;
+  const unsigned int H_dim = (unsigned int)hidden_.size();
+  for (unsigned int j = 0; j < H_dim; ++j) {
+    h_cur_norm += hidden_[j] * hidden_[j];
+  }
+  const float cur_nlms_scale = 1.0f / (0.25f + (h_cur_norm / (float)H_dim));
+  const float eff_output_lr = LSTM_OUTPUT_LR_EFF * cur_nlms_scale;
+#else
+  const float eff_output_lr = LSTM_OUTPUT_LR_EFF;
+#endif
+
   for (unsigned int i = 0; i < output_size_; ++i) {
-//    float error = 0;
-//    if (i == input) error = output_[last_epoch][i] - 1;
-//    else error = output_[last_epoch][i];
-    float error = (i == input) ? (output_[last_epoch][i] - 1) : output_[last_epoch][i];
+    float error = (i == input) ? (output_[last_epoch][i] - 1.0f) : output_[last_epoch][i];
 #ifndef P1_MODE
     output_layer_[epoch_][i] = output_layer_[last_epoch][i];
-    output_layer_[epoch_][i] -= LSTM_OUTPUT_LR_EFF * error * hidden_;
+    output_layer_[epoch_][i] -= eff_output_lr * error * hidden_;
 #else
-    output_w_[i] -= LSTM_OUTPUT_LR_EFF * error * hidden_;
+    output_w_[i] -= eff_output_lr * error * hidden_;
 #endif
   }
   return Predict(input);
