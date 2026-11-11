@@ -96,7 +96,7 @@ inline int min(int a, int b) {return a<b?a:b;}
 inline int max(int a, int b) {return a<b?b:a;}
 #endif
 
-int num_models = 439+1-2-7;
+int num_models = 439+1-2-7 + 2; // EXP-060: +2 predictions from maps1 and maps2
 std::valarray<float> model_predictions(0.5f, num_models);
 unsigned int prediction_index = 0;
 float conversion_factor = 1.0 / 4095;
@@ -3314,6 +3314,62 @@ BracketContext<U16> htcxt;
 
 SparseMatchModel smatch; // 2 inputs to fp
 
+struct StationaryMap {
+    U32 *Data = nullptr;
+    int Context = 0, Mask = 0, Stride = 0, bCount = 0, bTotal = 0, B = 0, N = 0;
+    U32 *cp = nullptr;
+    int Multiplier = 8;
+    unsigned char *rdy = nullptr;
+    U32 ival = 0;
+    inline void rdyrow(U32 r) {
+        if (!rdy[r]) {
+            U32* d = &Data[(size_t)r * Stride];
+            for (int i = 0; i < Stride; ++i) d[i] = ival;
+            rdy[r] = 1;
+        }
+    }
+    void Init(int BitsOfContext, int InputBits = 8, int mul = 8, int Rate = 0) {
+        Multiplier = mul;
+        N = (int)((1ull << BitsOfContext) * ((1ull << InputBits) - 1));
+        Context = 0; Mask = (1 << BitsOfContext) - 1; Stride = (1 << InputBits) - 1;
+        bCount = 0; bTotal = InputBits; B = 0;
+        alloc(Data, N);
+        ival = (0x7FF << 20) | min(1023, Rate);
+        rdy = (unsigned char*)calloc((size_t)Mask + 1, 1);
+        if (!rdy) exit(1);
+        rdyrow(0);
+        cp = &Data[0];
+    }
+    void Free() {
+        if (Data) { free(Data); Data = nullptr; }
+        if (rdy) { free(rdy); rdy = nullptr; }
+    }
+    void set(U32 ctx) {
+        rdyrow(ctx & Mask);
+        Context = (ctx & Mask) * Stride;
+        bCount = B = 0;
+    }
+    void mix() {
+        int Prediction;
+        U32 p0 = cp[0];
+        int n = p0 & 1023, pr = p0 >> 13;
+        p0 += (n < 1023);
+        const int64_t delta = int64_t((x.y << 19) - pr) * dt[n];
+        p0 += (static_cast<U32>(delta) & 0xfffffc00u);
+        cp[0] = p0;
+        B += (x.y && B > 0);
+        cp = &Data[Context + B];
+        Prediction = (*cp) >> 20;
+        x.mxInputs1.add((stretch(Prediction) * Multiplier) / 32);
+        x.mxInputs1.add(((Prediction - 2048) * Multiplier) / (32 * 2));
+        prediction_index--;
+        bCount++; B += B + 1;
+        if (bCount == bTotal) bCount = B = 0;
+    }
+};
+StationaryMap maps1;
+StationaryMap maps2;
+
 void PredictorInit() {
     n3bState=n2bState=0xffffffff;
     pr=2048;
@@ -3329,6 +3385,8 @@ void PredictorInit() {
     scmA[4].Init(8); 
     scmA[5].Init(8); 
     scmA[6].Init(7); 
+    maps1.Init(16, 8);
+    maps2.Init(16, 8);
 
     // Mixers      size,  shift, err, errmul 
     mxA[0].Init(    2048, 237,  8, 69); // general
@@ -3352,7 +3410,7 @@ void PredictorInit() {
     apmA5.Init();
     rcmA[0].Init(1*4096*4096,6);
 
-    x.mxInputs1.ncount=(515+16+1-5*2-2*2)&-16;
+    x.mxInputs1.ncount=((515+16+1-5*2-2*2 + 4) + 15) & -16; // 528
     x.mxInputs2.ncount=(8+15)&-16;
 
     // Provide inputs array info to mixers
@@ -4581,6 +4639,8 @@ int modelPrediction(int c0,int bpos,int c4){
         AH2=hash(19,     x5&0x80ffff);
         wrtcxt=deccode; // set cmix FP mixer context
         mxA[8].cxt=deccode;
+        maps1.set((word0 * 191));
+        maps2.set(deccode >> 2);
     }
 
     //indirectBrByte
@@ -4749,6 +4809,11 @@ int modelPrediction(int c0,int bpos,int c4){
     mxA[9].cxt=(x.bpos<<8)*4+(fails&3)*256 + lstmex;
 
     x.mxInputs1.add(stretch(lstmpr)); prediction_index--;
+    maps1.mix();
+    maps2.mix();
+    while (x.mxInputs1.ncount < 528) {
+        x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
+    }
     x.mxInputs2.add(mxA[0].p1());
     x.mxInputs2.add(mxA[1].p1());
     x.mxInputs2.add(mxA[2].p1());
