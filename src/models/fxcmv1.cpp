@@ -18,6 +18,8 @@
 */
 
 #include "fxcmv1.h"
+#include "../contexts/page_contexts.h"
+#include "../contexts/word_recency.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -3399,12 +3401,19 @@ ContextMap1 cmC1[8];
 // large state memory, per context max 14 uniqe contexts state sets
 // for large amount of large contexts
 ContextMap2 cmC2[18];
-APM<256>  apmA0;
+APM<65536>  apmA0;
 APM<0x8000*2>  apmA1;
 APM<0x8000*2>  apmA2;
 APM<0x20000*2>  apmA3;
 APM<0x20000*2>  apmA4;
 APM<0x20000*2>  apmA5;
+
+static inline unsigned int apm_extra() {
+    unsigned int v = 0;
+    v = pagectx::ApmExtra();
+    v = (v << 3) | wordrec::ApmExtra();
+    return v;
+}
 RunContextMap rcmA[1];
 BracketContext<U8> brcxt;
 BracketContext<U8> qocxt;
@@ -3527,6 +3536,9 @@ void PredictorInit() {
     apmA4.Init();
     apmA5.Init();
     rcmA[0].Init(1*4096*4096,6);
+    if (pagectx::link) pagectx::link->Reset();
+    pagectx::surprise.Reset();
+    wordrec::rec_bucket = 0;
 
     // 500 baseline + 4 EXP-060 maps1/2 + 24 EXP-059a DCSM = 528 (already multiple of 16, <= 560)
     x.mxInputs1.ncount=((504 + 24) + 15) & -16; // 528
@@ -4076,6 +4088,7 @@ int modelPrediction(int c0,int bpos,int c4){
 
             words=words|1;
             word0=word0*2104+j; //263*8
+            wordrec::PrefixSeen(word0, (unsigned)pos);
             word00=word0;
             h=word0*271; u8w=0;
             if (brcxt.cxt==SQUAREOPEN && fccxt.cxt!=HTLINK && fc!=HTML) linkword=linkword*2104+j;
@@ -4225,12 +4238,16 @@ int modelPrediction(int c0,int bpos,int c4){
             if ((buffer1(5)==charSwap(LESSTHAN)) && (c1==GREATERTHAN  ) &&(buffer1(4)=='p'  )&& isPre==false && strcmp(so, "pre")==0) isPre=true,so=&sonull;
             else if ((buffer1(5)=='/') && (c1==GREATERTHAN) &&(buffer1(4)=='p'  )&& strcmp(so, "pre")==0) isPre=false,so=&sonull;
 
-            if ((buffer1(6)=='/') && (c1==GREATERTHAN) &&(buffer1(5)=='p'  )&& strcmp(so, "page")==0) isPre=isMath=isNowiki=false;
+            if ((buffer1(6)=='/') && (c1==GREATERTHAN) &&(buffer1(5)=='p'  )&& strcmp(so, "page")==0) {
+                isPre=isMath=isNowiki=false;
+                if (pagectx::link) pagectx::link->NewArticle();
+            }
 
             // Update word0 pos
             wp[word0&0xffff]=pos;
 
             word0=h=0; 
+            wordrec::rec_bucket = 0; 
             // Paragraph or sentence related updates
             if (linkword && c1==COLON) linkword=0;
             if (c1=='-'&& c2==SPACE) worcxt1.Reset(),sVerb=0;
@@ -4406,6 +4423,19 @@ int modelPrediction(int c0,int bpos,int c4){
         if (c1==SPACE && c2==LESSTHAN) fccxt.Update(GREATERTHAN); 
         // Switch from possible category link to http link ( [word:// to [http:// )
         if (fccxt.cxt==COLON && c2=='/' && c1=='/') fccxt.Update(LF),fccxt.Update(HTLINK);
+        {
+            pagectx::LinkState* L = pagectx::link;
+            if (L) {
+                const bool in_br = (brcxt.cxt==SQUAREOPEN && fccxt.cxt!=HTLINK && fc!=HTML);
+                if (in_br) {
+                    if (!L->inlink) L->Enter();
+                    if (c1==VERTICALBAR || c1==SQUARECLOSE) L->Commit();
+                    else L->Char((unsigned char)c1);
+                } else if (L->inlink) {
+                    L->Leave();
+                }
+            }
+        }
         // Wiki link in the beginning of line
         if (colcxt.lastfc(0)==SQUAREOPEN && c1==SPACE && isParagraph==0) {
             if (c2==SQUARECLOSE || c3==SQUARECLOSE) {
@@ -5037,7 +5067,7 @@ void update1() {
     pr=modelPrediction(x.c0,x.bpos,x.c4);
     AddPrediction(pr);
 
-    int pt, pu=(apmA0.p(pr, x.c0, 3,x.y)+7*pr+4)>>3, pv, pz=failcount+1;
+    int pt, pu=(apmA0.p(pr, x.c0 + (int)(apm_extra() << 8), 3,x.y)+7*pr+4)>>3, pv, pz=failcount+1;
 
     pz+=tri[(fails>>5)&3];
     pz+=trj[(fails>>3)&3];
