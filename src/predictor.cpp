@@ -17,6 +17,7 @@
 #include "contexts/interval-hash.h"
 #include "contexts/bit-context.h"
 #include "contexts/combined-context.h"
+#include "contexts/page_contexts.h"
 
 #include <vector>
 #include <stdlib.h>
@@ -406,6 +407,8 @@ float Predictor::Predict() {
   }
   float p = Sigmoid::Logistic(mixers_[1][0]->Mix());
   p = sse_.Predict(p);
+  float final_p = (byte_mixer_override >= 0) ? (float)byte_mixer_override : p;
+  last_p16_ = (unsigned int)(1.0f + 65534.0f * final_p);
   if (byte_mixer_override >= 0) {
     return byte_mixer_override;
   }
@@ -413,6 +416,7 @@ float Predictor::Predict() {
 }
 
 void Predictor::Perceive(int bit) {
+  pagectx::surprise.AddBit(last_p16_, bit, manager_.bit_context_ >= 128);
   for (unsigned int i = 0; i < models_.size(); ++i) {
     if (i == fxcm_index_) continue;
     models_[i]->Perceive(bit);

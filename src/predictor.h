@@ -54,6 +54,7 @@ class Predictor {
   Sigmoid sigmoid_;
   std::vector<std::unique_ptr<ByteMixer>> byte_mixers_;
   std::vector<bool> vocab_;
+  unsigned int last_p16_ = 32768;
 };
 
 #endif
