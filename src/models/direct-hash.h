@@ -2,9 +2,7 @@
 #define DIRECT_HASH_H
 
 #include "model.h"
-
-#include <vector>
-#include <array>
+#include "direct-storage.h"
 
 class DirectHash : public Model {
  public:
@@ -20,9 +18,8 @@ class DirectHash : public Model {
   unsigned long long index_;
   int limit_;
   float delta_, divisor_;
-  std::vector<std::array<float, 256>> predictions_;
-  std::vector<std::array<unsigned char, 256>> counts_;
-  std::vector<unsigned long long> checksums_;
+  LazyDirectTable table_;
+  DemandBuffer<unsigned long long> checksums_;
 };
 
 #endif
