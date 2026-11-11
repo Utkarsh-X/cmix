@@ -1,17 +1,22 @@
 #include "indirect-hash.h"
 
+#include <cassert>
+
 IndirectHash::IndirectHash(const unsigned int& bit_context, unsigned int order1,
     unsigned int hash_size1, unsigned int order2, unsigned int hash_size2) :
     byte_(bit_context), context1_(0), hash_size1_(hash_size1),
     hash_size2_(hash_size2), size1_(0), hashes_(0, 0) {
+  assert(hash_size1 * order1 < 32);
+  assert(hash_size2 * order2 <= 32);
   context_ = 0;
-  size1_ = (unsigned long long)1 << (hash_size1 * order1);
+  size1_ = (unsigned int)((unsigned long long)1 << (hash_size1 * order1));
   size_ = (unsigned long long)1 << (hash_size2 * order2);
   hashes_.resize(size1_, 0);
 }
 
 void IndirectHash::Update() {
-  hashes_[context1_] = ((context_ << hash_size2_) + byte_) & (size_ - 1);
+  hashes_[context1_] = static_cast<uint32_t>(
+      ((context_ << hash_size2_) + byte_) & (size_ - 1));
   context1_ = ((context1_ << hash_size1_) + byte_) & (size1_ - 1);
   context_ = hashes_[context1_];
 }

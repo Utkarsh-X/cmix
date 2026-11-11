@@ -96,7 +96,7 @@ inline int min(int a, int b) {return a<b?a:b;}
 inline int max(int a, int b) {return a<b?b:a;}
 #endif
 
-int num_models = 439+1-2-7 + 2; // EXP-060: +2 predictions from maps1 and maps2
+int num_models = 436; // EXP-059a: 431 active predictions + 5 cascaded DCSM mix() outputs
 std::valarray<float> model_predictions(0.5f, num_models);
 unsigned int prediction_index = 0;
 float conversion_factor = 1.0 / 4095;
@@ -107,7 +107,7 @@ void AddPrediction(int x) {
 }
 
 void ResetPredictions() {
-    assert(prediction_index >= 0 && prediction_index <= num_models);
+    assert(prediction_index == (unsigned int)num_models);
     prediction_index = 0;
 }
 
@@ -139,13 +139,13 @@ typedef unsigned long long int U64;
 
 //////////////////////////// Array ////////////////////////////
 
-template <class T> void alloc(T*&ptr, int c) {
+template <class T> void alloc(T*&ptr, size_t c) {
   ptr=(T*)calloc(c, sizeof(T));
   if (!ptr) exit(1);
 }
  
 // for aligned data
-template <class T> void alloc1(T*&data, int c,T*&ptr,const int align=16) {
+template <class T> void alloc1(T*&data, size_t c,T*&ptr,const int align=16) {
   ptr=(T*)calloc(c, sizeof(T));
   if (!ptr) exit(1);
   data=(T*)(((uintptr_t)ptr+(align-1)) & ~(uintptr_t)(align-1));
@@ -195,10 +195,16 @@ struct alignas(64) Inputs{
         short n[S];
         int ncount;     // mixer input count
         void add(int p){
-            assert(ncount >= 0 && ncount <= S);
+            assert(ncount >= 0 && ncount < S);
             assert(p>-2048 && p<2048);
             n[ncount++]=p;
             AddPrediction(squash(p));
+        }
+        // Mixer-only input (e.g. DCSM internal pre1 state) without emitting an L0 model prediction.
+        inline void add_internal(int p){
+            assert(ncount >= 0 && ncount < S);
+            assert(p>-2048 && p<2048);
+            n[ncount++]=static_cast<short>(p < -2047 ? -2047 : (p > 2047 ? 2047 : p));
         }
     };
 template <const int S >
@@ -727,7 +733,10 @@ struct StateMap {
     assert(cxt>=0 && cxt<N);
     update();
     pr=t[cxt=c]>>20;
-  } 
+  }
+  void Free() {
+    if (t) { free(t); t=nullptr; }
+  }
 }; 
 
 struct StateMap1 {
@@ -1693,40 +1702,95 @@ struct  APM {
     }
 };
 
+// Fast 2-input adaptive combiner (from ex-girlfriend DirectStateMap cascade)
+struct Mix {
+  int N;
+  int *wt;
+  int x1, x2;
+  int cxt;
+  int pr;
+
+  void Init(int n=256) {
+    N=n; x1=0; x2=0; cxt=0; pr=0;
+    alloc(wt, (size_t)n * 2);
+    for (int i=0; i<N*2; ++i)
+      wt[i]=1<<23;
+  }
+  int pp(int p1, int p2, int cx) {
+    assert(cx>=0 && cx<N);
+    cxt=cx*2;
+    return pr=((x1=p1)*(wt[cxt]>>16)+(x2=p2)*(wt[cxt+1]>>16)+128)>>8;
+  }
+  void update(int y) {
+    assert(y==0 || y==1);
+    int err=((y<<12)-squash(pr));
+    if ((wt[cxt]&3)<3) {
+      ++wt[cxt];
+      err*=4-(wt[cxt]&3);
+    }
+    err=(err+8)>>4;
+    wt[cxt]+=(x1*err)&-4;
+    wt[cxt+1]+=x2*err;
+  }
+  void Free() {
+    if (wt) { free(wt); wt=nullptr; }
+  }
+};
+
 short pre1[256];
 struct DirectStateMap {
   StateMap *sm;
-  int *cxt;
+  U32 *cxt;
   U32 mask;
   U8 *CxtState;
   int index;
   int count;
   const U8 *nn;
-    
+  Mix *mmm;
+  int pu;
+
   void __attribute__ ((noinline)) Init(int m,int c,const U8 *nn1){
-    nn=nn1;
-    mask=(1<<m)-1,index=0,count=c;
-    alloc(cxt,c);
-    alloc(CxtState,(mask+1));
-    alloc(sm,c);
-    for (int i=0; i<count; i++) 
+    nn=nn1; pu=0;
+    mask=(1u<<m)-1u; index=0; count=c;
+    assert(mask>=63 && ((mask+1)&mask)==0);
+    alloc(cxt,(size_t)c);
+    alloc(CxtState,(size_t)mask+1);
+    alloc(sm,(size_t)c);
+    alloc(mmm,(size_t)c);
+    for (int i=0; i<count; i++) {
       sm[i].Init(256,nn1);
+      mmm[i].Init(256);
+    }
   }
   U8 next(int state, int y){
       return nn[state*4+y];
   }
-  void set(U32 cx,int y) {
+  void __attribute__ ((noinline)) set(U32 cx,int y) {
+    assert(cxt[index]<=mask);
+    assert(index<count);
     CxtState[cxt[index]]=next(CxtState[cxt[index]],y);       // update state
-    cxt[index]=(cx)&mask;                                     // get new context
-    sm[index].set(CxtState[cxt[index]]);    // predict from new context
-    x.mxInputs1.add(stretch(sm[index].pr)>>2);
-    prediction_index--;
-    x.mxInputs1.add(pre1[CxtState[cxt[index]]]);// sub
-    prediction_index--;
+    cxt[index]=cx&mask;                                     // get new context
+    const U8 state=CxtState[cxt[index]];
+    sm[index].set(state);    // predict from new context
+    const int stretched_pr = stretch(sm[index].pr);
+    if (index==0) pu=stretched_pr;
+    else mmm[index-1].update(x.y), pu=clp(mmm[index-1].pp(pu, stretched_pr, state));
+    x.mxInputs1.add_internal(pre1[state]);
     index++;
   }
-  void mix() {
-    index=0;
+  void __attribute__ ((noinline)) mix() {
+    x.mxInputs1.add(pu>>2);
+    index=pu=0;
+  }
+  void Free() {
+    for (int i=0; i<count; ++i) {
+      sm[i].Free();
+      mmm[i].Free();
+    }
+    if (cxt) { free(cxt); cxt=nullptr; }
+    if (CxtState) { free(CxtState); CxtState=nullptr; }
+    if (sm) { free(sm); sm=nullptr; }
+    if (mmm) { free(mmm); mmm=nullptr; }
   }
 };
 void pre2(U8 *nn) {
@@ -3277,7 +3341,7 @@ U32 t[14];
 
 int c1,c2,c3;
 U8 words,spaces,numbers;
-U32 word0,word00,word1,word2,word3,wshift,x4,x5,isMatch,firstWord,linkword,senword;
+U32 h=0,word0,word00,word1,word2,word3,wshift,x4,x5,isMatch,firstWord,linkword,senword;
 U32 number0,number1,numlen0,numlen1,mybenum;
 // First char context index, bracket/first char context index (max value 7)
 U32 FcIdx=0,BrFcIdx;
@@ -3351,8 +3415,12 @@ WordsContext worcxt1;
 WordsContext worcxt2;
 BracketContext<U16> htcxt;
 
-//DirectStateMap dcsm;  //1x5 inputs to fp
-//DirectStateMap dcsm1; //1x2 inputs to fp
+// EXP-059a: Safely sized DirectStateMaps (-1 bit from ex-girlfriend baseline = 488 MiB, 19 contexts)
+DirectStateMap dcsm;   // 27-bit (128 MiB), 5 contexts
+DirectStateMap dcsm0;  // 28-bit (256 MiB), 6 contexts
+DirectStateMap dcsm1;  // 23-bit (  8 MiB), 2 contexts
+DirectStateMap dcsm2;  // 26-bit ( 64 MiB), 3 contexts
+DirectStateMap dcsmN;  // 25-bit ( 32 MiB), 3 contexts
 
 SparseMatchModel smatch; // 2 inputs to fp
 
@@ -3430,6 +3498,14 @@ void PredictorInit() {
     maps1.Init(16, 8);
     maps2.Init(16, 8);
 
+    // EXP-059a: 5 safely-sized DirectStateMaps (488 MiB total, 19 internal + 5 cascaded outputs = 24 inputs)
+    const int dccount = 6;
+    dcsm.Init(27, dccount - 1, &STA7[0][0]);
+    dcsm0.Init(28, dccount,    &STA7[0][0]);
+    dcsm1.Init(23, 2,          &STA7[0][0]);
+    dcsm2.Init(26, 3,          &STA7[0][0]);
+    dcsmN.Init(25, 3,          &STA7[0][0]);
+
     // Mixers      size,  shift, err, errmul 
     mxA[0].Init(    2048, 237,  8, 69); // general
     mxA[1].Init(   6*256, 204,  8, 19); // ...
@@ -3452,7 +3528,8 @@ void PredictorInit() {
     apmA5.Init();
     rcmA[0].Init(1*4096*4096,6);
 
-    x.mxInputs1.ncount=((515+16+1-5*2-2*2 + 4) + 15) & -16; // 528
+    // 500 baseline + 4 EXP-060 maps1/2 + 24 EXP-059a DCSM = 528 (already multiple of 16, <= 560)
+    x.mxInputs1.ncount=((504 + 24) + 15) & -16; // 528
     x.mxInputs2.ncount=(8+15)&-16;
 
     // Provide inputs array info to mixers
@@ -3906,7 +3983,7 @@ void __attribute__ ((noinline)) procWord() {
 // Main context parsing and prediction
 int modelPrediction(int c0,int bpos,int c4){
     int i,c;
-    U32 h,j;
+    U32 j;
 
     if (bpos== 0){
         c3=c2;
@@ -4853,9 +4930,47 @@ int modelPrediction(int c0,int bpos,int c4){
     x.mxInputs1.add(stretch(lstmpr)); prediction_index--;
     maps1.mix();
     maps2.mix();
+
+    // EXP-059a: DirectStateMaps (19 internal pre1 inputs + 5 cascaded Mix predictions = 24 tail inputs [504..527])
+    // Note: cmix lacks ex-girlfriend's worcxt0 / worcxt.Code(); use verified worcxt.Word() equivalents.
+    const U32 dsmidx[19] = {
+        (word0*191)*256+x.c0,
+        (word0*191+worcxt.Word(1))*256+x.c0,
+        (word0*191+worcxt.Word(2))*256+x.c0,
+        (word0*191+worcxt.Word(3))*256+x.c0,
+        (word0*191+worcxt.Word(4))*256+x.c0,
+        (word00*191+indirectBrByte)*256+x.c0,
+        (word00*191+worcxt.Word(1)+indirectBrByte)*256+x.c0,
+        (word00*191+worcxt.Word(2)+indirectBrByte)*256+x.c0,
+        (indirectBrByte)*256+x.c0,
+        (cxtind3)*191+x.c0,
+        (h+worcxt1.Word(1))*256+x.c0,
+        (h+worcxt1.Word(2))*256+x.c0,
+        (h+worcxt1.Word(3))*256+x.c0,
+        (h+worcxt1.Word(4))*256+x.c0,
+        (h+worcxt1.Word(5))*256+x.c0,
+        (h+worcxt1.Word(6))*256+x.c0,
+        (h+worcxt.Word(1)+fccxt.cxt)*256+x.c0,
+        (h+worcxt.Word(2)+fccxt.cxt)*256+x.c0,
+        (h+worcxt.Word(3)+fccxt.cxt)*256+x.c0,
+    };
+    dcsm.set(dsmidx[0],x.y);   dcsm.set(dsmidx[1],x.y);   dcsm.set(dsmidx[2],x.y);
+    dcsm.set(dsmidx[3],x.y);   dcsm.set(dsmidx[4],x.y);
+    dcsm2.set(dsmidx[5],x.y);  dcsm2.set(dsmidx[6],x.y);  dcsm2.set(dsmidx[7],x.y);
+    dcsm1.set(dsmidx[8],x.y);  dcsm1.set(dsmidx[9],x.y);
+    dcsm0.set(dsmidx[10],x.y); dcsm0.set(dsmidx[11],x.y); dcsm0.set(dsmidx[12],x.y);
+    dcsm0.set(dsmidx[13],x.y); dcsm0.set(dsmidx[14],x.y); dcsm0.set(dsmidx[15],x.y);
+    dcsmN.set(dsmidx[16],x.y); dcsmN.set(dsmidx[17],x.y); dcsmN.set(dsmidx[18],x.y);
+    dcsm.mix();
+    dcsm0.mix();
+    dcsm1.mix();
+    dcsm2.mix();
+    dcsmN.mix();
+
     while (x.mxInputs1.ncount < 528) {
         x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
     }
+    assert(x.mxInputs1.ncount == 528);
     x.mxInputs2.add(mxA[0].p1());
     x.mxInputs2.add(mxA[1].p1());
     x.mxInputs2.add(mxA[2].p1());
