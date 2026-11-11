@@ -66,6 +66,45 @@ inline void AvxScale(float* weights, float scale, int n) {
   }
 }
 
+template <int R>
+inline void DotRowsExact(const float* __restrict x, float* const* __restrict w,
+    int n, float* __restrict out) {
+  __m256 acc[R];
+  for (int r = 0; r < R; ++r) acc[r] = _mm256_setzero_ps();
+  int i = 0;
+  for (; i + 7 < n; i += 8) {
+    const __m256 xv = _mm256_loadu_ps(x + i);
+    for (int r = 0; r < R; ++r) {
+      acc[r] = _mm256_fmadd_ps(xv, _mm256_loadu_ps(w[r] + i), acc[r]);
+    }
+  }
+  for (int r = 0; r < R; ++r) out[r] = HorizontalSum(acc[r]);
+  for (; i < n; ++i) {
+    const float xv = x[i];
+    for (int r = 0; r < R; ++r) out[r] += xv * w[r][i];
+  }
+}
+
+template <int R>
+inline void TrainRowsExact(const float* __restrict x, float* const* __restrict w,
+    int n, const float* __restrict u) {
+  __m256 uv[R];
+  for (int r = 0; r < R; ++r) uv[r] = _mm256_set1_ps(u[r]);
+  int i = 0;
+  for (; i + 7 < n; i += 8) {
+    const __m256 xv = _mm256_loadu_ps(x + i);
+    for (int r = 0; r < R; ++r) {
+      __m256 vw = _mm256_loadu_ps(w[r] + i);
+      vw = _mm256_fnmadd_ps(uv[r], xv, vw);
+      _mm256_storeu_ps(w[r] + i, vw);
+    }
+  }
+  for (; i < n; ++i) {
+    const float xv = x[i];
+    for (int r = 0; r < R; ++r) w[r][i] -= u[r] * xv;
+  }
+}
+
 }  // namespace
 #endif
 
@@ -77,42 +116,45 @@ Mixer::Mixer(const std::valarray<float>& inputs,
     learning_rate_(learning_rate), context_(context), max_steps_(1), steps_(0)
     {}
 
-ContextData* Mixer::GetContextData() {
-  ContextData* data;
-  unsigned long long limit = 10000;
-  if (context_map_.size() >= limit && context_map_.find(context_) == context_map_.end()) {
-    data = context_map_[0xDEADBEEF].get();
-    if (data == nullptr) {
-      context_map_[0xDEADBEEF] = std::unique_ptr<ContextData>(
-          new ContextData(inputs_.size(), extra_inputs_.size()));
-      data = context_map_[0xDEADBEEF].get();
-    }
-  } else {
-    data = context_map_[context_].get();
-    if (data == nullptr) {
-      context_map_[context_] = std::unique_ptr<ContextData>(
-          new ContextData(inputs_.size(), extra_inputs_.size()));
-      data = context_map_[context_].get();
-    }
-  }
-
+inline ContextData* Mixer::GetContextData() {
+  const unsigned int key = static_cast<unsigned int>(context_);
+  if (key == cached_key_ && cached_ptr_ != nullptr) return cached_ptr_;
+  ContextData* data = ResolveContextSlow(key);
+  cached_key_ = key;
+  cached_ptr_ = data;
   return data;
 }
 
-float Mixer::Mix() {
+ContextData* Mixer::ResolveContextSlow(unsigned int key) {
+  auto it = context_map_.find(key);
+  if (it != context_map_.end()) return it->second;
+
+  constexpr unsigned long long limit = 10000;
+  if (context_map_.size() >= limit) {
+    auto dead = context_map_.find(0xDEADBEEFu);
+    if (dead != context_map_.end()) return dead->second;
+    context_pool_.emplace_back(
+        new ContextData(inputs_.size(), extra_inputs_.size()));
+    ContextData* ptr = context_pool_.back().get();
+    context_map_.emplace(0xDEADBEEFu, ptr);
+    return ptr;
+  }
+  context_pool_.emplace_back(
+      new ContextData(inputs_.size(), extra_inputs_.size()));
+  ContextData* ptr = context_pool_.back().get();
+  context_map_.emplace(key, ptr);
+  return ptr;
+}
+
+float* Mixer::PrepareMix() {
   ContextData* data = GetContextData();
   current_data_ = data;
+  return &data->weights[0];
+}
 
-#ifdef __AVX2__
-  int n = inputs_.size();
-  p_ = AvxDotProduct(&inputs_[0], &data->weights[0], n);
-#else
-  float p = 0;
-  for (int i = 0; i < inputs_.size(); ++i) {
-    p += inputs_[i] * data->weights[i];
-  }
-  p_ = p;
-#endif
+float Mixer::FinishMix(float main_dot) {
+  ContextData* data = current_data_;
+  p_ = main_dot;
 
   for (unsigned int i = 0; i < extra_inputs_.size(); ++i) {
     extra_inputs_[i] = extra_inputs_vec_[i];
@@ -134,6 +176,59 @@ float Mixer::Mix() {
   return p_;
 }
 
+float Mixer::Mix() {
+  float* w = PrepareMix();
+#ifdef __AVX2__
+  int n = inputs_.size();
+  float main_dot = AvxDotProduct(&inputs_[0], w, n);
+#else
+  float main_dot = 0;
+  for (unsigned int i = 0; i < inputs_.size(); ++i) {
+    main_dot += inputs_[i] * w[i];
+  }
+#endif
+  return FinishMix(main_dot);
+}
+
+void Mixer::BatchDot(const float* inputs, float* const* weights, int count,
+    int n, float* out_dots) {
+#ifdef __AVX2__
+  int r = 0;
+  for (; r + 3 < count; r += 4) {
+    DotRowsExact<4>(inputs, weights + r, n, out_dots + r);
+  }
+  for (; r < count; ++r) {
+    out_dots[r] = AvxDotProduct(inputs, weights[r], n);
+  }
+#else
+  for (int r = 0; r < count; ++r) {
+    float p = 0;
+    const float* w = weights[r];
+    for (int i = 0; i < n; ++i) p += inputs[i] * w[i];
+    out_dots[r] = p;
+  }
+#endif
+}
+
+void Mixer::BatchTrain(const float* inputs, float* const* weights, int count,
+    int n, const float* updates) {
+#ifdef __AVX2__
+  int r = 0;
+  for (; r + 3 < count; r += 4) {
+    TrainRowsExact<4>(inputs, weights + r, n, updates + r);
+  }
+  for (; r < count; ++r) {
+    AvxWeightUpdate(weights[r], inputs, updates[r], n);
+  }
+#else
+  for (int r = 0; r < count; ++r) {
+    float* w = weights[r];
+    const float u = updates[r];
+    for (int i = 0; i < n; ++i) w[i] -= u * inputs[i];
+  }
+#endif
+}
+
 const float* Mixer::E2EWRow() {
   if (!current_data_) current_data_ = GetContextData();
   return &current_data_->weights[0];
@@ -152,9 +247,9 @@ void Mixer::E2ESeedHead(unsigned int head, float val) {
   }
 }
 
-void Mixer::Perceive(int bit) {
+float Mixer::ComputeUpdate(int bit) {
   ContextData* data = current_data_ ? current_data_ : GetContextData();
-  current_data_ = nullptr;
+  current_data_ = data;
   float decay = 0.9 / pow(0.0000001 * steps_ + 0.8, 0.8);
   decay *= 1.5 - ((1.0 * data->steps) / max_steps_);
 
@@ -180,32 +275,26 @@ void Mixer::Perceive(int bit) {
     max_steps_ = data->steps;
   }
 
+  int ne = extra_inputs_.size();
+  if (ne > 0) {
+#ifdef __AVX2__
+    AvxWeightUpdate(&data->extra_weights[0], &extra_inputs_[0], update, ne);
+#else
+    data->extra_weights -= update * extra_inputs_;
+#endif
+  }
+  return update;
+}
+
+void Mixer::Perceive(int bit) {
+  float update = ComputeUpdate(bit);
+  ContextData* data = current_data_;
+  current_data_ = nullptr;
+
 #ifdef __AVX2__
   int n = inputs_.size();
   AvxWeightUpdate(&data->weights[0], &inputs_[0], update, n);
-
-  int ne = extra_inputs_.size();
-  if (ne > 0) {
-    AvxWeightUpdate(&data->extra_weights[0], &extra_inputs_[0], update, ne);
-  }
-
-  // Ex-Girlfriend optimization: disable periodic weight decay to preserve rare context weights
-  /*
-  if ((data->steps & 1023) == 0) {
-    AvxScale(&data->weights[0], 1.0f - 3.0e-6f, n);
-    if (ne > 0) {
-      AvxScale(&data->extra_weights[0], 1.0f - 3.0e-6f, ne);
-    }
-  }
-  */
 #else
   data->weights -= update * inputs_;
-  data->extra_weights -= update * extra_inputs_;
-  /*
-  if ((data->steps & 1023) == 0) {
-    data->weights *= 1.0f - 3.0e-6f;
-    data->extra_weights *= 1.0f - 3.0e-6f;
-  }
-  */
 #endif
 }

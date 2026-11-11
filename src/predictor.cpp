@@ -378,10 +378,26 @@ float Predictor::Predict() {
   auxiliary_average /= auxiliary_.size();
   manager_.auxiliary_context_ = auxiliary_average * 15;
 
-  for (unsigned int i = 0; i < mixers_[0].size(); ++i) {
-    float p = mixers_[0][i]->Mix();
-    layers_[0]->SetExtraInput(p);
-    layers_[1]->SetStretchedInput(i, p);
+  const unsigned int n0 = (unsigned int)mixers_[0].size();
+  if (n0 > 0 && n0 <= 64) {
+    const std::valarray<float>& in0 = layers_[0]->Inputs();
+    float main_dots[64];
+    float* wptrs[64];
+    for (unsigned int i = 0; i < n0; ++i) {
+      wptrs[i] = mixers_[0][i]->PrepareMix();
+    }
+    Mixer::BatchDot(&in0[0], wptrs, (int)n0, (int)in0.size(), main_dots);
+    for (unsigned int i = 0; i < n0; ++i) {
+      float p = mixers_[0][i]->FinishMix(main_dots[i]);
+      layers_[0]->SetExtraInput(p);
+      layers_[1]->SetStretchedInput(i, p);
+    }
+  } else {
+    for (unsigned int i = 0; i < n0; ++i) {
+      float p = mixers_[0][i]->Mix();
+      layers_[0]->SetExtraInput(p);
+      layers_[1]->SetStretchedInput(i, p);
+    }
   }
   layers_[0]->ClearExtraInputs();
   for (unsigned int i = 0; i < auxiliary_.size(); ++i) {
@@ -408,9 +424,27 @@ void Predictor::Perceive(int bit) {
     byte_mixer->Perceive(bit);
   }
   E2EGrad(bit);
-  for (unsigned int i = 0; i < mixers_.size(); ++i) {
-    for (const auto& mixer : mixers_[i]) {
-      mixer->Perceive(bit);
+  const unsigned int n0 = (unsigned int)mixers_[0].size();
+  if (n0 > 0 && n0 <= 64) {
+    const std::valarray<float>& in0 = layers_[0]->Inputs();
+    float updates[64];
+    float* wptrs[64];
+    for (unsigned int i = 0; i < n0; ++i) {
+      updates[i] = mixers_[0][i]->ComputeUpdate(bit);
+      wptrs[i] = mixers_[0][i]->CurrentWeights();
+      mixers_[0][i]->ClearCurrent();
+    }
+    Mixer::BatchTrain(&in0[0], wptrs, (int)n0, (int)in0.size(), updates);
+    for (unsigned int i = 1; i < mixers_.size(); ++i) {
+      for (const auto& mixer : mixers_[i]) {
+        mixer->Perceive(bit);
+      }
+    }
+  } else {
+    for (unsigned int i = 0; i < mixers_.size(); ++i) {
+      for (const auto& mixer : mixers_[i]) {
+        mixer->Perceive(bit);
+      }
     }
   }
   sse_.Perceive(bit);

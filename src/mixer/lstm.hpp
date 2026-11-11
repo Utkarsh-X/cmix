@@ -280,17 +280,47 @@ inline std::valarray<float>& Lstm::Predict(unsigned int input) {
       std::copy(start, start + num_cells_, start2);
     }
   }
+#ifndef P1_MODE
   for (unsigned int i = 0; i < output_size_; ++i) {
     float sum = 0;
-    for (unsigned int j = 0; j < hidden_.size(); ++j) {
-#ifndef P1_MODE
+    for (unsigned int j = 0; j < hidden_.size(); ++j)
       sum += hidden_[j] * output_layer_[epoch_][i][j];
-#else
-      sum += hidden_[j] * output_w_[i][j];
-#endif
-    }
     output_[epoch_][i] = LSTM_EXPF(sum);
   }
+#else
+  {
+    const unsigned int HS = (unsigned int)hidden_.size();
+    const float* __restrict hp = &hidden_[0];
+    float* __restrict op = &output_[epoch_][0];
+    unsigned int i = 0;
+    for (; i + 7 < output_size_; i += 8) {
+      const float* __restrict w0 = &output_w_[i][0];
+      const float* __restrict w1 = &output_w_[i+1][0];
+      const float* __restrict w2 = &output_w_[i+2][0];
+      const float* __restrict w3 = &output_w_[i+3][0];
+      const float* __restrict w4 = &output_w_[i+4][0];
+      const float* __restrict w5 = &output_w_[i+5][0];
+      const float* __restrict w6 = &output_w_[i+6][0];
+      const float* __restrict w7 = &output_w_[i+7][0];
+      float s0=0,s1=0,s2=0,s3=0,s4=0,s5=0,s6=0,s7=0;
+      for (unsigned int j = 0; j < HS; ++j) {
+        const float h = hp[j];
+        s0 += h * w0[j]; s1 += h * w1[j]; s2 += h * w2[j]; s3 += h * w3[j];
+        s4 += h * w4[j]; s5 += h * w5[j]; s6 += h * w6[j]; s7 += h * w7[j];
+      }
+      op[i]   = LSTM_EXPF(s0); op[i+1] = LSTM_EXPF(s1);
+      op[i+2] = LSTM_EXPF(s2); op[i+3] = LSTM_EXPF(s3);
+      op[i+4] = LSTM_EXPF(s4); op[i+5] = LSTM_EXPF(s5);
+      op[i+6] = LSTM_EXPF(s6); op[i+7] = LSTM_EXPF(s7);
+    }
+    for (; i < output_size_; ++i) {
+      const float* __restrict w = &output_w_[i][0];
+      float sum = 0;
+      for (unsigned int j = 0; j < HS; ++j) sum += hp[j] * w[j];
+      op[i] = LSTM_EXPF(sum);
+    }
+  }
+#endif
   output_[epoch_] /= output_[epoch_].sum();
   int epoch = epoch_;
   ++epoch_;

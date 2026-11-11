@@ -55,10 +55,15 @@ def main():
         "/EHsc",
         "/O2",
         "/arch:AVX2",
+        "/GL",
+        "/Gw",
+        "/Gy",
         "/DNDEBUG",
         f"/FI{os.path.join(base_dir, 'msvc_compat.h')}",
         "/DP1_MODE=2",
         "/DP3_BATCH",
+        "/DP3_REGBLOCK",
+        "/DOERR_REGBLOCK",
         "/DP2_FASTMATH",
         "/DLSTM_QUANT=8",
         "/DOUTPUT_LR=0.06f",
@@ -100,7 +105,7 @@ def main():
     print(f"All {len(obj_files)} objects compiled in {time.time() - t_start:.2f}s.")
     print("Linking cmix_v21.exe...")
     exe_path = os.path.join(base_dir, "cmix_v21.exe")
-    link_cmd = [link_exe, "/nologo", "/OUT:" + exe_path, *obj_files]
+    link_cmd = [link_exe, "/nologo", "/LTCG", "/OPT:REF", "/OPT:ICF", "/OUT:" + exe_path, *obj_files]
     t0 = time.time()
     res = subprocess.run(link_cmd, env=env, capture_output=True, text=True)
     if res.returncode == 0:

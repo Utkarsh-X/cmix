@@ -481,6 +481,7 @@ struct Mixer1 {
   short*tx; // N inputs from add()  
   short* wx ; // N*M weights
   short *ptr;
+  unsigned char* rdy = nullptr;
   int cxt;  // S contexts
   int pr;   // last result (scaled 12 bits)
   int shift1; 
@@ -490,18 +491,25 @@ struct Mixer1 {
 #if defined(__AVX2__)
  int dot_product (const short* const t, const short* const w, int n) {
   assert(n == ((n + 15) & -16));
-  __m256i sum = _mm256_setzero_si256 ();
-  while ((n -= 16) >= 0) { // Each loop sums 16 products
-    __m256i tmp = _mm256_madd_epi16 (*(__m256i *) &t[n], *(__m256i *) &w[n]); // t[n] * w[n] + t[n+1] * w[n+1]
-    tmp = _mm256_srai_epi32 (tmp, 8); //                                        (t[n] * w[n] + t[n+1] * w[n+1]) >> 8
-    sum = _mm256_add_epi32 (sum, tmp); //                                sum += (t[n] * w[n] + t[n+1] * w[n+1]) >> 8
-  } 
-   sum =_mm256_hadd_epi32(sum,_mm256_setzero_si256 ());       //add [1]=[1]+[2], [2]=[3]+[4], [3]=0, [4]=0, [5]=[5]+[6], [6]=[7]+[8], [7]=0, [8]=0
-   sum =_mm256_hadd_epi32(sum,_mm256_setzero_si256 ());       //add [1]=[1]+[2], [2]=0,       [3]=0, [4]=0, [5]=[5]+[6], [6]=0,       [7]=0, [8]=0
-   __m128i lo = _mm256_extractf128_si256(sum, 0);
-   __m128i hi = _mm256_extractf128_si256(sum, 1);
-   __m128i newsum = _mm_add_epi32(lo, hi);                    //sum last two
-   return _mm_cvtsi128_si32(newsum);
+  __m256i s0 = _mm256_setzero_si256 (), s1 = _mm256_setzero_si256 (),
+          s2 = _mm256_setzero_si256 (), s3 = _mm256_setzero_si256 ();
+  while ((n -= 64) >= 0) {
+    s0 = _mm256_add_epi32 (s0, _mm256_srai_epi32 (_mm256_madd_epi16 (*(const __m256i *) &t[n],      *(const __m256i *) &w[n]),      8));
+    s1 = _mm256_add_epi32 (s1, _mm256_srai_epi32 (_mm256_madd_epi16 (*(const __m256i *) &t[n + 16], *(const __m256i *) &w[n + 16]), 8));
+    s2 = _mm256_add_epi32 (s2, _mm256_srai_epi32 (_mm256_madd_epi16 (*(const __m256i *) &t[n + 32], *(const __m256i *) &w[n + 32]), 8));
+    s3 = _mm256_add_epi32 (s3, _mm256_srai_epi32 (_mm256_madd_epi16 (*(const __m256i *) &t[n + 48], *(const __m256i *) &w[n + 48]), 8));
+  }
+  n += 64;
+  __m256i sum = _mm256_add_epi32 (_mm256_add_epi32 (s0, s1), _mm256_add_epi32 (s2, s3));
+  while ((n -= 16) >= 0) {
+    sum = _mm256_add_epi32 (sum, _mm256_srai_epi32 (_mm256_madd_epi16 (*(const __m256i *) &t[n], *(const __m256i *) &w[n]), 8));
+  }
+  __m128i lo = _mm256_castsi256_si128 (sum);
+  __m128i hi = _mm256_extracti128_si256 (sum, 1);
+  lo = _mm_add_epi32 (lo, hi);
+  lo = _mm_add_epi32 (lo, _mm_shuffle_epi32 (lo, 0x4E));
+  lo = _mm_add_epi32 (lo, _mm_shuffle_epi32 (lo, 0xB1));
+  return _mm_cvtsi128_si32 (lo);
 }
 
  void train (const short* const t, short* const w, int n, const int e) {
@@ -624,6 +632,13 @@ void train(short *t, short *w, int n, int err) {
 }
 #endif 
 
+  inline void rdyrow(int c) {
+    if (!rdy[c]) {
+      short* row = &wx[(size_t)c * N];
+      for (int j = 0; j < N; ++j) row[j] = 129;
+      rdy[c] = 1;
+    }
+  }
   // Adjust weights to minimize coding cost of last prediction
   void __attribute__ ((noinline)) update(int y) {
        err=((y<<12)-pr)*uperr/4;
@@ -632,18 +647,21 @@ void train(short *t, short *w, int n, int err) {
       if (err<-32768)
           err=-32768;
       if(err>=-elim && err<=elim) err=0;
-      train(&tx[0], &wx[cxt*N], N, err);
+      rdyrow(cxt);
+      train(&tx[0], &wx[(size_t)cxt*N], N, err);
   }
  
   // predict next bit
   int __attribute__ ((noinline)) p( ) {
     assert(cxt>=0 && cxt<M);
-    int dp=dot_product(&tx[0], &wx[cxt*N], N)*shift1>>11;
+    rdyrow(cxt);
+    int dp=dot_product(&tx[0], &wx[(size_t)cxt*N], N)*shift1>>11;
     return pr=squash(dp);
   }
   int __attribute__ ((noinline)) p1( ) {
     assert(cxt<M);
-    int dp=dot_product(&tx[0], &wx[cxt*N], N)*shift1>>11;
+    rdyrow(cxt);
+    int dp=dot_product(&tx[0], &wx[(size_t)cxt*N], N)*shift1>>11;
     if (dp<-2047) {
             dp=-2047;
         }
@@ -657,8 +675,9 @@ void train(short *t, short *w, int n, int err) {
     N=n;
     alloc1(wx,(N*M)+32,ptr,32);
     tx=mn; 
-    // Set bias
-    for (int j=0; j<M*N; ++j) wx[j]=129;
+    rdy = (unsigned char*)calloc((size_t)M, 1);
+    if (!rdy) exit(1);
+    rdyrow(0);
   }
   void Init(int m,  U32 s,U32 e,U32 ue){
     M=m,  cxt=0, shift1=s,elim=e,uperr=ue;err=0;
@@ -1115,6 +1134,13 @@ inline void mix4() {
 int mix1(const int cc,const int bp,const int c1) {
   // Update model with y
    result=0;
+  if (bp == 0 || bp == 2 || bp == 5) {
+    for (int i = 0; i < cn; ++i) {
+      if (!((cxtMask >> (cn - i)) & 1) && !(bp > 1 && runp[i][0] == 0)) {
+        _mm_prefetch((const char*)&t[(cxt[i] + cc) & tmask], _MM_HINT_T0);
+      }
+    }
+  }
   for (int i=0; i<cn; ++i) {
     if ((cxtMask>>(cn-i))&1) {
         mix4(); // Skip
@@ -1319,6 +1345,13 @@ inline void mix4() {
 int __attribute__ ((noinline))  mix() {
   // Update model with y
    result=0;
+  if (x.bpos == 0 || x.bpos == 2 || x.bpos == 5) {
+    for (int i = 0; i < cn; ++i) {
+      if (!((cxtMask >> (cn - i)) & 1) && !(x.bpos > 1 && runp[i][0] == 0)) {
+        _mm_prefetch((const char*)&t[(cxt[i] + x.c0) & tmask], _MM_HINT_T0);
+      }
+    }
+  }
   for (int i=0; i<cn; ++i) {
       if ((cxtMask>>(cn-i))&1)  {
         mix4();
@@ -1554,6 +1587,15 @@ inline void mix4() {
 int __attribute__ ((noinline))  mix() {
   // Update model with y
    result=0;
+  if (x.bpos == 0 || x.bpos == 2 || x.bpos == 5) {
+    for (int i = 0; i < cn; ++i) {
+      if (!((cxtMask >> (cn - i)) & 1) && !(x.bpos > 1 && runp[i][0] == 0)) {
+        const char* addr = (const char*)&t[(cxt[i] + x.c0) & tmask];
+        _mm_prefetch(addr, _MM_HINT_T0);
+        _mm_prefetch(addr + 64, _MM_HINT_T0);
+      }
+    }
+  }
   for (int i=0; i<cn; ++i) {
       if ((cxtMask>>(cn-i))&1)  {
         mix4();

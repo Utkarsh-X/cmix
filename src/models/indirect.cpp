@@ -7,7 +7,8 @@ Indirect::Indirect(const State& state,
     std::vector<unsigned char>& map) :  byte_context_(byte_context),
     bit_context_(bit_context), map_index_(0), map_offset_(0),
     divisor_(1.0 / delta), state_(state), map_(map) {
-  map_offset_ = rand() % (map_.size() - 257);
+  div_map_.Init(map_.size() - 257);
+  map_offset_ = div_map_.Mod(rand());
   for (int i = 0; i < 256; ++i) {
     predictions_[i] = state_.InitProbability(i);
   }
@@ -27,5 +28,6 @@ void Indirect::Perceive(int bit) {
 }
 
 void Indirect::ByteUpdate() {
-  map_index_ = (257 * byte_context_ + map_offset_) % (map_.size() - 257);
+  map_index_ = div_map_.Mod(257 * byte_context_ + map_offset_);
+  __builtin_prefetch(&map_[map_index_], 0, 3);
 }

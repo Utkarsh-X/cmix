@@ -3,6 +3,7 @@
 
 #include "model.h"
 #include "../states/state.h"
+#include "../ds/fast_div.h"
 
 #include <vector>
 #include <array>
@@ -24,6 +25,7 @@ class Indirect : public Model {
   float divisor_;
   const State& state_;
   std::vector<unsigned char>& map_;
+  fastdiv::Div64 div_map_;
   std::array<float, 256> predictions_;
 };
 
