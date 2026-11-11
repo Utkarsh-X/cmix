@@ -8,6 +8,8 @@ Match::Match(const std::vector<unsigned char>& history,
     cur_match_(0), cur_byte_(0), bit_pos_(128), match_length_(0),
     longest_match_(longest_match), limit_(limit),delta_(delta),
     divisor_(1.0 / (limit + delta)), map_(map_size, 0) {
+  div_map_.Init(map_.size());
+  div_hist_.Init(history_.size());
   for (int i = 0; i < 256; ++i) {
     predictions_[i] = 0.5 + (i + 0.5) / 512;
   }
@@ -40,19 +42,19 @@ void Match::Perceive(int bit) {
   }
 
   if (bit_context_ >= 128) {
-    map_[byte_context_ % map_.size()] = history_pos_;
+    map_[div_map_.Mod(byte_context_)] = history_pos_;
     ++history_pos_;
   }
 }
 
 void Match::ByteUpdate() {
   if (match_length_ < 8) {
-    cur_match_ = map_[byte_context_ % map_.size()];
+    cur_match_ = map_[div_map_.Mod(byte_context_)];
   } else {
     ++cur_match_;
   }
-  cur_match_ %= history_.size();
-  cur_byte_ = history_.at(cur_match_);
+  cur_match_ = div_hist_.Mod(cur_match_);
+  cur_byte_ = history_[cur_match_];
   bit_pos_ = 128;
 
   unsigned long long match_context = match_length_ / 32;

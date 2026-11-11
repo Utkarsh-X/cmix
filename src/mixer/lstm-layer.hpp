@@ -84,23 +84,29 @@ inline void Adam(std::valarray<float>* g, std::valarray<float>* m,
   } else {
     alpha = learning_rate * 0.1f / sqrt(5e-5f * UPDATE_LIMIT + 1.0f);
   }
-  (*m) *= beta1;
-  (*m) += (1.0f - beta1) * (*g);
-  (*v) *= beta2;
-  (*v) += (1.0f - beta2) * (*g) * (*g);
+  const float one_m_b1 = 1.0f - beta1;
+  const float one_m_b2 = 1.0f - beta2;
 #ifdef LSTM_ALPHA_CAP_ONLY
-  // bias corrections track true t in both regimes; only alpha stays capped
-  (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))) /
-      LSTM_ADAM_DENOM((*v) / (float)(1.0f - pow(beta2, t))));
+  const float m_corr = (float)(1.0f - pow(beta1, t));
+  const float v_corr = (float)(1.0f - pow(beta2, t));
 #else
-  if (t < UPDATE_LIMIT) {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))) /
-        LSTM_ADAM_DENOM((*v) / (float)(1.0f - pow(beta2, t))));
-  } else {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, UPDATE_LIMIT))) /
-        LSTM_ADAM_DENOM((*v) / (float)(1.0f - pow(beta2, UPDATE_LIMIT))));
-  }
+  const float tt = (t < UPDATE_LIMIT) ? t : (float)UPDATE_LIMIT;
+  const float m_corr = (float)(1.0f - pow(beta1, tt));
+  const float v_corr = (float)(1.0f - pow(beta2, tt));
 #endif
+  float* __restrict gp = &(*g)[0];
+  float* __restrict mp = &(*m)[0];
+  float* __restrict vp = &(*v)[0];
+  float* __restrict wp = &(*w)[0];
+  const size_t n = w->size();
+  for (size_t k = 0; k < n; ++k) {
+    const float gk = gp[k];
+    const float mk = mp[k] * beta1 + one_m_b1 * gk;
+    const float vk = vp[k] * beta2 + one_m_b2 * gk * gk;
+    mp[k] = mk;
+    vp[k] = vk;
+    wp[k] -= alpha * ((mk / m_corr) / LSTM_ADAM_DENOM(vk / v_corr));
+  }
 }
 
 }
@@ -295,22 +301,61 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   neurons.error_ *= neurons.gamma_ * neurons.ivar_[epoch];
   neurons.error_ -= ((neurons.error_ * neurons.norm_[epoch]).sum() /
       num_cells_) * neurons.norm_[epoch];
+  const float* __restrict errp = &neurons.error_[0];
   if (layer > 0) {
-    for (unsigned int i = 0; i < num_cells_; ++i) {
-      float f = 0;
+    float* __restrict hep = &(*hidden_error)[0];
+    unsigned int i = 0;
+    for (; i + 7 < num_cells_; i += 8) {
+      const float* __restrict r0 = &neurons.transpose_[num_cells_ + i][0];
+      const float* __restrict r1 = &neurons.transpose_[num_cells_ + i + 1][0];
+      const float* __restrict r2 = &neurons.transpose_[num_cells_ + i + 2][0];
+      const float* __restrict r3 = &neurons.transpose_[num_cells_ + i + 3][0];
+      const float* __restrict r4 = &neurons.transpose_[num_cells_ + i + 4][0];
+      const float* __restrict r5 = &neurons.transpose_[num_cells_ + i + 5][0];
+      const float* __restrict r6 = &neurons.transpose_[num_cells_ + i + 6][0];
+      const float* __restrict r7 = &neurons.transpose_[num_cells_ + i + 7][0];
+      float f0=0,f1=0,f2=0,f3=0,f4=0,f5=0,f6=0,f7=0;
       for (unsigned int j = 0; j < num_cells_; ++j) {
-        f += neurons.error_[j] * neurons.transpose_[num_cells_ + i][j];
+        const float e = errp[j];
+        f0 += e * r0[j]; f1 += e * r1[j]; f2 += e * r2[j]; f3 += e * r3[j];
+        f4 += e * r4[j]; f5 += e * r5[j]; f6 += e * r6[j]; f7 += e * r7[j];
       }
-      (*hidden_error)[i] += f;
+      hep[i]   += f0; hep[i+1] += f1; hep[i+2] += f2; hep[i+3] += f3;
+      hep[i+4] += f4; hep[i+5] += f5; hep[i+6] += f6; hep[i+7] += f7;
+    }
+    for (; i < num_cells_; ++i) {
+      const float* __restrict r = &neurons.transpose_[num_cells_ + i][0];
+      float f = 0;
+      for (unsigned int j = 0; j < num_cells_; ++j) f += errp[j] * r[j];
+      hep[i] += f;
     }
   }
   if (epoch > 0) {
-    for (unsigned int i = 0; i < num_cells_; ++i) {
-      float f = 0;
+    float* __restrict sep = &stored_error_[0];
+    unsigned int i = 0;
+    for (; i + 7 < num_cells_; i += 8) {
+      const float* __restrict r0 = &neurons.transpose_[i][0];
+      const float* __restrict r1 = &neurons.transpose_[i + 1][0];
+      const float* __restrict r2 = &neurons.transpose_[i + 2][0];
+      const float* __restrict r3 = &neurons.transpose_[i + 3][0];
+      const float* __restrict r4 = &neurons.transpose_[i + 4][0];
+      const float* __restrict r5 = &neurons.transpose_[i + 5][0];
+      const float* __restrict r6 = &neurons.transpose_[i + 6][0];
+      const float* __restrict r7 = &neurons.transpose_[i + 7][0];
+      float f0=0,f1=0,f2=0,f3=0,f4=0,f5=0,f6=0,f7=0;
       for (unsigned int j = 0; j < num_cells_; ++j) {
-        f += neurons.error_[j] * neurons.transpose_[i][j];
+        const float e = errp[j];
+        f0 += e * r0[j]; f1 += e * r1[j]; f2 += e * r2[j]; f3 += e * r3[j];
+        f4 += e * r4[j]; f5 += e * r5[j]; f6 += e * r6[j]; f7 += e * r7[j];
       }
-      stored_error_[i] += f;
+      sep[i]   += f0; sep[i+1] += f1; sep[i+2] += f2; sep[i+3] += f3;
+      sep[i+4] += f4; sep[i+5] += f5; sep[i+6] += f6; sep[i+7] += f7;
+    }
+    for (; i < num_cells_; ++i) {
+      const float* __restrict r = &neurons.transpose_[i][0];
+      float f = 0;
+      for (unsigned int j = 0; j < num_cells_; ++j) f += errp[j] * r[j];
+      sep[i] += f;
     }
   }
 #ifndef P3_BATCH

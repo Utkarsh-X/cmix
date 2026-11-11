@@ -20,6 +20,7 @@
 
 #include "paq8.h"
 #include "../preprocess/preprocessor.h"
+#include "../ds/emhash_map.hpp"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -388,7 +389,7 @@ Stretch::Stretch(): t(4096) {
 
 #if !defined(__GNUC__)
 
-#if (2 == _M_IX86_FP)
+#if defined(_M_X64) || defined(__AVX2__) || (2 == _M_IX86_FP)
 #define __SSE2__
 #elif (1 == _M_IX86_FP)
 #define __SSE__
@@ -400,7 +401,65 @@ static int dot_product (const short* const t, const short* const w, int n);
 
 static void train (const short* const t, short* const w, int n, const int e);
 
-#if defined(__SSE2__)
+#if defined(__AVX2__)
+#include <immintrin.h>
+#define OPTIMIZE "AVX2-"
+
+static int dot_product (const short* const t, const short* const w, int n) {
+  __m256i sum0 = _mm256_setzero_si256 ();
+  __m256i sum1 = _mm256_setzero_si256 ();
+  while ((n -= 32) >= 0) {
+    __m256i tmp0 = _mm256_madd_epi16 (_mm256_loadu_si256((const __m256i*) &t[n]),      _mm256_loadu_si256((const __m256i*) &w[n]));
+    __m256i tmp1 = _mm256_madd_epi16 (_mm256_loadu_si256((const __m256i*) &t[n + 16]), _mm256_loadu_si256((const __m256i*) &w[n + 16]));
+    sum0 = _mm256_add_epi32 (sum0, _mm256_srai_epi32 (tmp0, 8));
+    sum1 = _mm256_add_epi32 (sum1, _mm256_srai_epi32 (tmp1, 8));
+  }
+  n += 32;
+  __m256i sum = _mm256_add_epi32 (sum0, sum1);
+  if (n >= 16) {
+    n -= 16;
+    __m256i tmp = _mm256_madd_epi16 (_mm256_loadu_si256((const __m256i*) &t[n]), _mm256_loadu_si256((const __m256i*) &w[n]));
+    sum = _mm256_add_epi32 (sum, _mm256_srai_epi32 (tmp, 8));
+  }
+  __m128i lo = _mm_add_epi32(_mm256_castsi256_si128(sum), _mm256_extracti128_si256(sum, 1));
+  if (n >= 8) {
+    n -= 8;
+    __m128i tmp = _mm_madd_epi16 (*(__m128i *) &t[n], *(__m128i *) &w[n]);
+    lo = _mm_add_epi32 (lo, _mm_srai_epi32 (tmp, 8));
+  }
+  lo = _mm_add_epi32 (lo, _mm_srli_si128 (lo, 8));
+  lo = _mm_add_epi32 (lo, _mm_srli_si128 (lo, 4));
+  return _mm_cvtsi128_si32 (lo);
+}
+
+static void train (const short* const t, short* const w, int n, const int e) {
+  if (e) {
+    const __m256i one256 = _mm256_set1_epi16 (1);
+    const __m256i err256 = _mm256_set1_epi16 (short(e));
+    while ((n -= 16) >= 0) {
+      __m256i tv = _mm256_loadu_si256((const __m256i*) &t[n]);
+      __m256i tmp = _mm256_adds_epi16 (tv, tv);
+      tmp = _mm256_mulhi_epi16 (tmp, err256);
+      tmp = _mm256_adds_epi16 (tmp, one256);
+      tmp = _mm256_srai_epi16 (tmp, 1);
+      tmp = _mm256_adds_epi16 (tmp, _mm256_loadu_si256((const __m256i*) &w[n]));
+      _mm256_storeu_si256((__m256i*) &w[n], tmp);
+    }
+    n += 16;
+    if (n >= 8) {
+      n -= 8;
+      const __m128i one = _mm_set1_epi16 (1);
+      const __m128i err = _mm_set1_epi16 (short(e));
+      __m128i tmp = _mm_adds_epi16 (*(__m128i *) &t[n], *(__m128i *) &t[n]);
+      tmp = _mm_mulhi_epi16 (tmp, err);
+      tmp = _mm_adds_epi16 (tmp, one);
+      tmp = _mm_srai_epi16 (tmp, 1);
+      tmp = _mm_adds_epi16 (tmp, *(__m128i *) &w[n]);
+      *(__m128i *) &w[n] = tmp;
+    }
+  }
+}
+#elif defined(__SSE2__)
 #include <emmintrin.h>
 #define OPTIMIZE "SSE2-"
 
@@ -513,7 +572,19 @@ void ResetPredictions() {
 class Mixer {
   const int N, S, init_w;
   Array<short, 16> tx;
-  std::unordered_map<unsigned int, std::unique_ptr<Array<short, 16>>> wx_;
+  emhash6::HashMap<unsigned int, Array<short, 16>*> wx_;
+  std::vector<std::unique_ptr<Array<short, 16>>> wx_pool_;
+  Array<short, 16>* get_wts(unsigned int context) {
+    auto it = wx_.find(context);
+    if (it != wx_.end()) return it->second;
+    auto ptr = std::make_unique<Array<short, 16>>(N);
+    short* p = &(*ptr)[0];
+    for (int k = 0; k < N; ++k) p[k] = init_w;
+    Array<short, 16>* raw = ptr.get();
+    wx_pool_.push_back(std::move(ptr));
+    wx_.emplace(context, raw);
+    return raw;
+  }
 
   Array<int> cxt;
   int ncxt;
@@ -527,13 +598,7 @@ public:
   void update() {
     for (int i=0; i<ncxt; ++i) {
       int err=((y<<12)-pr[i])*7;
-      int context = cxt[i];
-      auto* wts = wx_[context].get();
-      if (wts == nullptr) {
-        wx_[context] = std::unique_ptr<Array<short, 16>>(new Array<short, 16>(N));
-        wts = wx_[context].get();
-        for (int i=0; i<N; ++i) (*wts)[i]=init_w;
-      }
+      auto* wts = get_wts((unsigned int)cxt[i]);
       train(&tx[0], &(*wts)[0], nx, err);
     }
     nx=base=ncxt=0;
@@ -554,13 +619,7 @@ public:
     if (mp) {
       mp->update();
       for (int i=0; i<ncxt; ++i) {
-        int context = cxt[i];
-        auto* wts = wx_[context].get();
-        if (wts == nullptr) {
-          wx_[context] = std::unique_ptr<Array<short, 16>>(new Array<short, 16>(N));
-          wts = wx_[context].get();
-          for (int i=0; i<N; ++i) (*wts)[i]=init_w;
-        }
+        auto* wts = get_wts((unsigned int)cxt[i]);
         pr[i]=squash((dot_product(&tx[0], &(*wts)[0], nx) * 9)>>9);
         mp->add(stretch(pr[i]));
       }
@@ -568,12 +627,7 @@ public:
       return mp->p();
     }
     else {
-      auto* wts = wx_[0].get();
-      if (wts == nullptr) {
-        wx_[0] = std::unique_ptr<Array<short, 16>>(new Array<short, 16>(N));
-        wts = wx_[0].get();
-        for (int i=0; i<N; ++i) (*wts)[i]=init_w;          
-      }
+      auto* wts = get_wts(0u);
 
       int z = dot_product(&tx[0], &(*wts)[0], nx);
       base = squash((z*16)>>13);

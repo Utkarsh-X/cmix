@@ -22,7 +22,7 @@
 
 #define __attribute__(x)
 #define __builtin_expect(x, y) (x)
-#define __builtin_prefetch(x, ...)
+#define __builtin_prefetch(x, ...) _mm_prefetch((const char*)(x), _MM_HINT_T0)
 #define fseeko _fseeki64
 #define ftello _ftelli64
 

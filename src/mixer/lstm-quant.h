@@ -170,16 +170,25 @@ static inline int32_t LstmQuantDotVnni(const int8_t* w, const uint8_t* xb,
 // int8 AVX2 fallback: sign-extend both sides to i16, vpmaddwd, i32 lanes.
 // Exact: pair-sums <= 2*127^2 = 32258; per-lane totals <= (n/16)*32258,
 // safe to n ~ 1e6 (we use n <= ~1600). (VM-verify)
-static inline int32_t LstmQuantDotAvx2(const int8_t* w, const int8_t* x,
+static inline int32_t LstmQuantDotAvx2(const int8_t* __restrict w, const int8_t* __restrict x,
     unsigned int n) {
-  __m256i acc = _mm256_setzero_si256();
-  for (unsigned int j = 0; j < n; j += 16) {
-    const __m256i a =
-        _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(x + j)));
-    const __m256i b =
-        _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(w + j)));
-    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(a, b));
+  __m256i acc0 = _mm256_setzero_si256();
+  __m256i acc1 = _mm256_setzero_si256();
+  unsigned int j = 0;
+  for (; j + 31 < n; j += 32) {
+    const __m256i a0 = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(x + j)));
+    const __m256i b0 = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(w + j)));
+    acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(a0, b0));
+    const __m256i a1 = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(x + j + 16)));
+    const __m256i b1 = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(w + j + 16)));
+    acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(a1, b1));
   }
+  for (; j < n; j += 16) {
+    const __m256i a = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(x + j)));
+    const __m256i b = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(w + j)));
+    acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(a, b));
+  }
+  __m256i acc = _mm256_add_epi32(acc0, acc1);
   __m128i lo = _mm256_castsi256_si128(acc);
   const __m128i hi = _mm256_extracti128_si256(acc, 1);
   lo = _mm_add_epi32(lo, hi);

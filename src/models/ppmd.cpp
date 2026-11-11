@@ -356,7 +356,7 @@ template <class T>
   void SWAP( T& t1, T& t2 ) { T tmp=t1; t1=t2; t2=tmp; }
 
 void PrefetchData(void* Addr) {
-  *(volatile byte*)Addr;
+  _mm_prefetch((const char*)Addr, _MM_HINT_T0);
 }
 
 enum {

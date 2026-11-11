@@ -441,15 +441,8 @@ union EKMC6 {
     static_assert(N == 16, "EKMC6: layout for 16 slots");
     static_assert(AUXB >= 20, "EKMC6: header does not fit");
     typedef unsigned long long Q;
-#if defined(_MSC_VER)
-    typedef u128 W;
-#else
-    typedef unsigned __int128 W;
-#endif
     inline Q hd() const { Q v; memcpy(&v, aux, 8); return v; }
     inline void sethd(Q v) { memcpy(aux, &v, 8); }
-    inline W cw() const { W v = 0; memcpy(&v, aux + 8, 12); return v; }
-    inline void setcw(W v) { memcpy(aux + 8, &v, 12); }
     inline int tag(int s) const { return (int)((hd() >> (3 * s)) & 7); }
     inline int q(int k) const { return (int)((hd() >> (48 + 4 * k)) & 15); }
     inline void push(int s, int poison) {
@@ -462,6 +455,58 @@ union EKMC6 {
         const Q h0 = hd();
         sethd((h0 & ~(7ull << (3 * s))) | ((Q)tg << (3 * s)));
     }
+#if defined(_MSC_VER)
+    inline void load_cw(uint64_t& lo, uint32_t& hi) const {
+        memcpy(&lo, aux + 8, 8);
+        memcpy(&hi, aux + 16, 4);
+    }
+    inline void store_cw(uint64_t lo, uint32_t hi) {
+        memcpy(aux + 8, &lo, 8);
+        memcpy(aux + 16, &hi, 4);
+    }
+    inline int ctr_from(uint64_t lo, uint32_t hi, int s) const {
+        const int sh = 6 * s;
+        uint64_t w = (sh < 64) ? ((lo >> sh) | ((sh > 58) ? ((uint64_t)hi << (64 - sh)) : 0)) : (hi >> (sh - 64));
+        return (int)(w & 63);
+    }
+    inline void zaehle(int s) {
+        uint64_t lo; uint32_t hi;
+        load_cw(lo, hi);
+        const int sh = 6 * s;
+        if (ctr_from(lo, hi, s) == CMAX) {
+            constexpr uint64_t kKeepLo = ~(0x1041041041041041ULL);
+            constexpr uint32_t kKeepHi = ~(0x04104104u);
+            lo = ((lo & kKeepLo) >> 1) | (((uint64_t)(hi & 1u)) << 63);
+            hi = (hi & kKeepHi) >> 1;
+        }
+        if (sh < 64) {
+            uint64_t old_lo = lo;
+            lo += (1ULL << sh);
+            if (lo < old_lo) hi += 1;
+        } else {
+            hi += (1u << (sh - 64));
+        }
+        store_cw(lo, hi);
+    }
+    inline void setctr(int s, int v) {
+        uint64_t lo; uint32_t hi;
+        load_cw(lo, hi);
+        const int sh = 6 * s;
+        if (sh < 59) {
+            lo = (lo & ~(63ULL << sh)) | ((uint64_t)v << sh);
+        } else if (sh >= 64) {
+            const int hs = sh - 64;
+            hi = (hi & ~(63u << hs)) | ((uint32_t)v << hs);
+        } else {
+            lo = (lo & ~(0xFULL << 60)) | (((uint64_t)v & 0xFULL) << 60);
+            hi = (hi & ~0x3u) | ((uint32_t)v >> 4);
+        }
+        store_cw(lo, hi);
+    }
+#else
+    typedef unsigned __int128 W;
+    inline W cw() const { W v = 0; memcpy(&v, aux + 8, 12); return v; }
+    inline void setcw(W v) { memcpy(aux + 8, &v, 12); }
     inline int ctr(W c, int s) const { return (int)((uint64_t)(c >> (6 * s)) & 63); }
     inline void zaehle(int s) {
         W c = cw();
@@ -478,6 +523,7 @@ union EKMC6 {
         c = (c & ~((W)63 << (6 * s))) | ((W)v << (6 * s));
         setcw(c);
     }
+#endif
     inline U8* slotp(int s) { return s < K0 ? &p0[s][0] : &p25[s - K0][0]; }
     template <int ART>
     __attribute__((noinline)) U8* get(U32 ch, int keep) {
@@ -504,6 +550,18 @@ union EKMC6 {
             m &= m - 1;
         }
         const int r1 = q(1), r2 = q(2), r3 = q(3);
+#if defined(_MSC_VER)
+        uint64_t cw_lo; uint32_t cw_hi;
+        load_cw(cw_lo, cw_hi);
+        int b = 0x7fffffff, bi = lo;
+        for (int pass = 0; pass < 2 && b == 0x7fffffff; ++pass) {
+            for (int s = lo; s < hi; ++s) {
+                if (!pass && (s == r0 || s == r1 || s == r2 || s == r3)) continue;
+                const int key = ctr_from(cw_lo, cw_hi, s) * 256 + slotp(s)[0];
+                if (key < b) b = key, bi = s;
+            }
+        }
+#else
         const W c = cw();
         int b = 0x7fffffff, bi = lo;
         for (int pass = 0; pass < 2 && b == 0x7fffffff; ++pass) {
@@ -513,6 +571,7 @@ union EKMC6 {
                 if (key < b) b = key, bi = s;
             }
         }
+#endif
 
         chk[bi] = cb;
         setctr(bi, 1);
