@@ -38,6 +38,7 @@ class Predictor {
   void AddWord();
   void AddDirect();
   void AddMatch();
+  void AddGrammarMatch();
   void AddDoubleIndirect();
   void AddMixers();
   void E2EGrad(int bit);

@@ -3,6 +3,7 @@
 #include "models/direct-hash.h"
 #include "models/indirect.h"
 #include "models/match.h"
+#include "models/grammar-match.h"
 #include "models/ppmd.h"
 #include "models/bracket.h"
 #include "models/paq8.h"
@@ -33,6 +34,7 @@ Predictor::Predictor(const std::vector<bool>& vocab) : manager_(),
   AddWord();
   AddDirect();
   AddMatch();
+  AddGrammarMatch();
   AddDoubleIndirect();
   AddMixers();
 }
@@ -162,6 +164,10 @@ void Predictor::AddMatch() {
         manager_.bit_context_, limit, delta, std::min(max_size, context.Size()),
         &(manager_.longest_match_)));
   }
+}
+
+void Predictor::AddGrammarMatch() {
+  AddModel(new GrammarMatch(manager_.bit_context_, 200, 0.5f));
 }
 
 void Predictor::AddDoubleIndirect() {
