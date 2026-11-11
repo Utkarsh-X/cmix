@@ -1,3 +1,4 @@
+#include "ppmd_order_table.h"
 // ppmd is written by Dmitry Shkarin.
 // mod_ppmd is adapted from ppmd by Eugene Shelwien.
 // This file is adapted from mod_ppmd_v2: http://encode.su/threads/2515-mod_ppmd
@@ -450,6 +451,18 @@ PPM_CONTEXT* suff( PPM_CONTEXT* This ) { return (PPM_CONTEXT*)Indx2Ptr(This->iSu
   int BSumm;
   int RunLength;
   int InitRL;
+  byte LtC1, LtC2;
+  int  LtLim;                     // limit of the current position
+  int  LtJ;                       // order of MinContext of this byte
+  int  LtE;                       // escapes of this byte
+  bool LtTextOpen;                // pText is referenced (deficit at entry > 0)
+
+  int  LtLimOf( unsigned c1, unsigned c2 ) {
+    int v = ppmd_order_table::kGrenze2[ ppmd_order_table::kKlasse[c1&255u] ][ ppmd_order_table::kKlasse[c2&255u] ];
+    if( v > _MaxOrder ) v = _MaxOrder;
+    if( v < 2 ) v = 2;
+    return v;
+  }
 
 enum {
   INT_BITS = 7,
@@ -655,11 +668,12 @@ void StartModelRare( void ) {
     return;
   }
 
-  OrderFall = _MaxOrder;
+  LtLim = LtLimOf( LtC1, LtC2 );
+  OrderFall = LtLim;
 
   InitSubAllocator();
 
-  InitRL = -( (_MaxOrder<13) ? _MaxOrder : 13 );
+  InitRL = -( (LtLim<13) ? LtLim : 13 );
   RunLength = InitRL;
 
   MaxContext = (PPM_CONTEXT*)AllocContext();
@@ -721,7 +735,7 @@ void RestoreModelRare( void ) {
   } while( GetUsedMemory()>3*(SubAllocatorSize>>2) );
 
   GlueCount = GlueCount1 = 0;
-  OrderFall = _MaxOrder;
+  OrderFall = LtLim;
 }
 
 PPM_CONTEXT* saved_pc;
@@ -758,8 +772,9 @@ PPM_CONTEXT* UpdateModel( PPM_CONTEXT* MinContext ) {
   }
   pc = MaxContext;
 
-  if( !OrderFall && iFSuccessor ) {
-    FoundState->iSuccessor = CreateSuccessors( 1, p, MinContext );
+  if( LtE==0 && !LtTextOpen && OrderFall<=1 && iFSuccessor ) {
+    FoundState->iSuccessor = LtCreateSuccessors( p, MinContext, LtJ, LtLim );
+    OrderFall = 0;
     if( !FoundState->iSuccessor ) { saved_pc=pc; return 0; };
     MaxContext = getSucc(FoundState);
     return MaxContext;
@@ -771,17 +786,18 @@ PPM_CONTEXT* UpdateModel( PPM_CONTEXT* MinContext ) {
 
   if( iFSuccessor ) {
     if( (byte*)Indx2Ptr(iFSuccessor) < UnitsStart )
-     iFSuccessor = CreateSuccessors( 0, p, MinContext );
+     iFSuccessor = LtCreateSuccessors( p, MinContext, LtJ, LtLim );
     else
      PrefetchData( Indx2Ptr(iFSuccessor) );
   } else
-    iFSuccessor = ReduceOrder( p, MinContext );
+    iFSuccessor = LtReduceOrder( p, MinContext );
 
   if( !iFSuccessor ) { saved_pc=pc; return 0; };
 
-  if( !--OrderFall ) {
+  if( --OrderFall <= 0 ) {
+    OrderFall = 0;
     iSuccessor = iFSuccessor;
-    pText -= (MaxContext!=MinContext);
+    if( !LtTextOpen ) pText--;
   }
 
   s0 = MinContext->SummFreq - FFreq;
@@ -833,7 +849,7 @@ PPM_CONTEXT* UpdateModel( PPM_CONTEXT* MinContext ) {
   return MaxContext;
 }
 
-uint CreateSuccessors( uint Skip, STATE* p, PPM_CONTEXT* pc ) {
+uint LtCreateSuccessors( STATE* p, PPM_CONTEXT* pc, int jF, int cap ) {
   byte tmp;
   uint cf, s0;
   STATE* ps[MAX_O];
@@ -842,10 +858,8 @@ uint CreateSuccessors( uint Skip, STATE* p, PPM_CONTEXT* pc ) {
   byte sym = FoundState->Symbol;
   uint iUpBranch = FoundState->iSuccessor;
 
-  if( !Skip ) {
-    *pps++ = FoundState;
-    if( !pc[0].iSuffix ) goto NO_LOOP;
-  }
+  *pps++ = FoundState;
+  if( !pc[0].iSuffix ) goto NO_LOOP;
 
   if( p ) { pc = suff(pc); goto LOOP_ENTRY; }
 
@@ -874,46 +888,54 @@ LOOP_ENTRY:
   } while ( pc[0].iSuffix );
 
 NO_LOOP:
-  if( pps==ps ) return Ptr2Indx(pc);
+  {
+  const int n = (int)(pps-ps);
+  const int lowest = jF - n + 1;
+  const int topNew = (jF < cap-1) ? jF : cap-1;
+  int nNew = topNew - lowest + 1;
+  if( nNew < 0 ) nNew = 0;
+  if( nNew ) {
+    PPM_CONTEXT ct;
+    ct.NumStats = 0;
+    ct.Flags = 0x10*(sym>=0x40);
+    sym = *(byte*)Indx2Ptr(iUpBranch);
+    ct.oneState().iSuccessor = Ptr2Indx((byte*)Indx2Ptr(iUpBranch)+1);
+    ct.oneState().Symbol = sym;
+    ct.Flags |= 0x08*(sym>=0x40);
 
-  PPM_CONTEXT ct;
-  ct.NumStats = 0;
-  ct.Flags = 0x10*(sym>=0x40);
-  sym = *(byte*)Indx2Ptr(iUpBranch);
-  ct.oneState().iSuccessor = Ptr2Indx((byte*)Indx2Ptr(iUpBranch)+1);
-  ct.oneState().Symbol = sym;
-  ct.Flags |= 0x08*(sym>=0x40);
+    if( pc[0].NumStats ) {
+      for( p=getStats(pc); p[0].Symbol!=sym; p++ );
+      cf = p[0].Freq - 1;
+      s0 = pc[0].SummFreq - pc[0].NumStats - cf;
+      cf = 1 + ((2*cf<s0) ? (12*cf>s0) : 2+cf/s0);
+      ct.oneState().Freq = Min<uint>( 7, cf );
+    } else {
+      ct.oneState().Freq = pc[0].oneState().Freq;
+    }
 
-  if( pc[0].NumStats ) {
-    for( p=getStats(pc); p[0].Symbol!=sym; p++ );
-    cf = p[0].Freq - 1;
-    s0 = pc[0].SummFreq - pc[0].NumStats - cf;
-    cf = 1 + ((2*cf<s0) ? (12*cf>s0) : 2+cf/s0);
-    ct.oneState().Freq = Min<uint>( 7, cf );
-  } else {
-    ct.oneState().Freq = pc[0].oneState().Freq;
+    for( int k=0; k<nNew; k++ ) {
+      PPM_CONTEXT* pc1 = (PPM_CONTEXT*)AllocContext();
+      if( !pc1 ) return 0;
+      ((uint*)pc1)[0] = ((uint*)&ct)[0];
+      ((uint*)pc1)[1] = ((uint*)&ct)[1];
+      pc1->iSuffix = Ptr2Indx(pc);
+      pc = pc1; pps--;
+      pps[0][0].iSuccessor = Ptr2Indx(pc);
+    }
   }
-
-  do {
-    PPM_CONTEXT* pc1 = (PPM_CONTEXT*)AllocContext();
-    if( !pc1 ) return 0;
-    ((uint*)pc1)[0] = ((uint*)&ct)[0];
-    ((uint*)pc1)[1] = ((uint*)&ct)[1];
-    pc1->iSuffix = Ptr2Indx(pc);
-    pc = pc1; pps--;
-    pps[0][0].iSuccessor = Ptr2Indx(pc);
-  } while( pps!=ps );
-
+  while( pps!=ps ) { pps--; pps[0][0].iSuccessor = Ptr2Indx(pc); }
+  }
   return Ptr2Indx(pc);
 }
 
-uint ReduceOrder( STATE* p, PPM_CONTEXT* pc ) {
+uint LtReduceOrder( STATE* p, PPM_CONTEXT* pc ) {
   byte tmp;
   STATE* p1;
-  PPM_CONTEXT* pc1=pc;
+  STATE* zs[MAX_O]; int nz = 0;
   FoundState->iSuccessor = Ptr2Indx(pText);
   byte sym = FoundState->Symbol;
   uint iUpBranch = FoundState->iSuccessor;
+  int jp = LtJ - 1;          // order of the state p (below FoundState)
   OrderFall++;
 
   if( p ) { pc=suff(pc); goto LOOP_ENTRY; }
@@ -935,19 +957,21 @@ uint ReduceOrder( STATE* p, PPM_CONTEXT* pc ) {
 LOOP_ENTRY:
     if( p->iSuccessor ) break;
     p->iSuccessor = iUpBranch;
+    zs[nz++] = p;
+    --jp;
     OrderFall++;
   }
 
   if( p->iSuccessor<=iUpBranch ) {
     p1 = FoundState;
     FoundState = p;
-    p->iSuccessor = CreateSuccessors(0,0,pc);
+    p->iSuccessor = LtCreateSuccessors(0, pc, jp, LtLim);
     FoundState = p1;
   }
 
-  if( OrderFall==1 && pc1==MaxContext ) {
+  if( OrderFall<=1 ) {
     FoundState->iSuccessor = p->iSuccessor;
-    pText--;
+    for( int k=0; k<nz; k++ ) zs[k]->iSuccessor = p->iSuccessor;
   }
 
   return p->iSuccessor;
@@ -1097,7 +1121,7 @@ void processSymbol2( PPM_CONTEXT& q, int symbol ) {
     FoundState = p;
     p[0].Freq += 4;
     q.SummFreq += 4; if( p[0].Freq > MAX_FREQ ) FoundState=rescale(q,OrderFall,FoundState);
-    RunLength = InitRL;
+    RunLength = -( (LtLim<13) ? LtLim : 13 );
     EscCount++;
   } else {
     low = Total;
@@ -1234,6 +1258,11 @@ void processSymbol2_T( PPM_CONTEXT& q, int ) {
 
   uint Init( uint MaxOrder, uint MMAX, uint CutOff, uint filesize ) {
     _MaxOrder = MaxOrder;
+    LtC1 = LtC2 = 0;
+    LtLim = LtLimOf( 0, 0 );
+    LtJ = 0;
+    LtE = 0;
+    LtTextOpen = false;
     _CutOff = CutOff;
     _MMAX = MMAX;
     _filesize = filesize;
@@ -1280,6 +1309,7 @@ void ppmd_PrepareByte( void ) {
 }
 
 void ppmd_UpdateByte( uint c ) {
+  const int lt_f0 = OrderFall;
   PPM_CONTEXT* MinContext = MaxContext;
   if( MinContext->NumStats ) {
     processSymbol1<0>( MinContext[0], c );
@@ -1297,11 +1327,22 @@ void ppmd_UpdateByte( uint c ) {
   }
 
   PPM_CONTEXT* p;
-  if( (OrderFall!=0) || ((byte*)getSucc(FoundState)<UnitsStart) ) {
+  {
+    const int lt_next = LtLimOf( c, LtC1 );
+    LtE = OrderFall - lt_f0;
+    LtJ = LtLim - OrderFall;              // order of MinContext
+    LtTextOpen = (lt_f0 > 0);
+    OrderFall += lt_next - LtLim;         // = next limit - j  (<= 0: cut)
+    LtLim = lt_next;
+  }
+  LtC2 = LtC1; LtC1 = (byte)c;
+
+  if( LtE==0 && !LtTextOpen && OrderFall<=1 && (byte*)getSucc(FoundState)>=UnitsStart ) {
+    p = MaxContext = getSucc(FoundState);
+    OrderFall = 0;
+  } else {
     p = UpdateModel( MinContext );
     if( p ) MaxContext = p;
-  } else {
-    p = MaxContext = getSucc(FoundState);
   }
 
   if( p==0 ) {
