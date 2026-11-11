@@ -3,6 +3,7 @@
 
 #include "context.h"
 
+#include <cstdint>
 #include <vector>
 
 class IndirectHash : public Context {
@@ -16,7 +17,7 @@ class IndirectHash : public Context {
   const unsigned int& byte_;
   unsigned long long context1_;
   unsigned int hash_size1_, hash_size2_, size1_;
-  std::vector<unsigned long long> hashes_;
+  std::vector<uint32_t> hashes_;
 };
 
 #endif
