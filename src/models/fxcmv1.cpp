@@ -1492,7 +1492,7 @@ struct ContextMap2 {
 // Construct using m bytes of memory for c contexts(c+7)&-8
 void __attribute__ ((noinline)) Init(U32 m1, int c, int s3,const U8 *nn1,int cs4,int k,int u,short *st){
     C=c&255;
-    int m=m1*2;
+    int m=m1*4;   // EXP-066 BigTab CM3: every ContextMap2 table x2 (m1*4 vs stock m1*2)
     tmask=((m>>7)-1); 
     cn=0;
     cxtMask=((1<C)-1)*2; // Inital zero contexts
