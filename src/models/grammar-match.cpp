@@ -16,6 +16,12 @@ GrammarMatch::GrammarMatch(const unsigned int& bit_context, int limit,
   counts_[kFamilyPipedPostCopy * 32] = 2;
   predictions_[kFamilyClose2 * 32] = 0.98f;
   counts_[kFamilyClose2 * 32] = 4;
+  predictions_[kFamilyCurly2 * 32] = 0.95f;
+  counts_[kFamilyCurly2 * 32] = 4;
+  predictions_[kFamilyOpen2 * 32 + 0] = 0.94f;
+  counts_[kFamilyOpen2 * 32 + 0] = 4;
+  predictions_[kFamilyOpen2 * 32 + 1] = 0.94f;
+  counts_[kFamilyOpen2 * 32 + 1] = 4;
 }
 
 GrammarMatch::~GrammarMatch() {}
@@ -80,6 +86,30 @@ void GrammarMatch::ParseByte(unsigned char c) {
 
   BracketAdvance(c);
   if (!in_title_ && title_len_ > 0) EchoAdvance(c);
+
+  open2_expect_ = 0;
+  if (c == '[' && prev_c_ != '[') {
+    open2_expect_ = '[';
+  } else if (c == '{' && prev_c_ != '{') {
+    open2_expect_ = '{';
+  }
+  if (c == '{') {
+    curly_close2_ = false;
+    if (curly_depth_ < 16 && prev_c_ == '{') {
+      ++curly_depth_;
+    }
+  } else if (c == '}') {
+    if (curly_close2_) {
+      curly_close2_ = false;
+    } else if (curly_depth_ > 0) {
+      curly_close2_ = true;
+      --curly_depth_;
+    }
+  } else {
+    curly_close2_ = false;
+  }
+  prev_c_ = c;
+
   ExportExpectation();
 }
 
@@ -166,6 +196,8 @@ void GrammarMatch::FinishTitle() {
   in_title_ = false;
   title_len_ = tbuf_len_;
   echo_k_ = 0;
+  curly_depth_ = 0;
+  curly_close2_ = false;
   if (title_len_ <= 0) return;
   for (int i = 0; i < title_len_; ++i) title_[i] = tbuf_[i];
   fail_[0] = 0;
@@ -190,6 +222,14 @@ void GrammarMatch::ExportExpectation() {
   } else if (br_state_ == kBrClose2) {
     expected_byte_ = ']';
     state_ = kFamilyClose2 * 32;
+    have_expectation_ = true;
+  } else if (curly_close2_) {
+    expected_byte_ = '}';
+    state_ = kFamilyCurly2 * 32;
+    have_expectation_ = true;
+  } else if (open2_expect_ != 0) {
+    expected_byte_ = open2_expect_;
+    state_ = kFamilyOpen2 * 32 + (open2_expect_ == '{' ? 1 : 0);
     have_expectation_ = true;
   } else if (!in_title_ && echo_k_ >= kEchoArm && echo_k_ < title_len_) {
     expected_byte_ = title_[echo_k_];

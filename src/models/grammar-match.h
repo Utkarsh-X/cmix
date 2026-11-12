@@ -19,7 +19,14 @@ class GrammarMatch : public Model {
   int StateIndex() const { return state_; }
 
  private:
-  enum Family { kFamilyPiped = 0, kFamilyPipedPostCopy = 1, kFamilyEcho = 2, kFamilyClose2 = 3 };
+  enum Family {
+    kFamilyPiped = 0,
+    kFamilyPipedPostCopy = 1,
+    kFamilyEcho = 2,
+    kFamilyClose2 = 3,
+    kFamilyCurly2 = 4,
+    kFamilyOpen2 = 5
+  };
   enum BracketState { kBrIdle, kBrTarget, kBrLabel, kBrPostCopy, kBrClose2, kBrScan };
 
   void ParseByte(unsigned char c);
@@ -60,6 +67,10 @@ class GrammarMatch : public Model {
   int tgt_len_ = 0;
   int label_j_ = 0;
   int label_pos_ = 0;
+  int curly_depth_ = 0;
+  bool curly_close2_ = false;
+  unsigned char open2_expect_ = 0;
+  unsigned char prev_c_ = 0;
   std::array<unsigned char, kTargetCap> tgt_;
 };
 
