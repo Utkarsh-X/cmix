@@ -7,7 +7,7 @@ Bracket::Bracket(const unsigned int& bit_context, int distance_limit,
     stats_(256, std::vector<std::pair<unsigned int, unsigned int>>
     (distance_limit_, {1, 256})) {
   brackets_ = {{'(',')'}, {'{','}'}, {'[',']'}, {'<','>'}, {'\'','\''},
-      {'"','"'}};
+      {'"','"'}, {0x02, 0x03}, {0x08, 0x08}};
 }
 
 void Bracket::ByteUpdate() {

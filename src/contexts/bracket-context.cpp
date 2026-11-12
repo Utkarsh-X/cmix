@@ -5,7 +5,8 @@ static inline unsigned int BracketType(unsigned char c) {
     case '(': return 0;
     case '{': return 1;
     case '[': return 2;
-    case '<': return 3;
+    case '<':
+    case 0x02: return 3;
     default:  return 0;
   }
 }
@@ -13,7 +14,7 @@ static inline unsigned int BracketType(unsigned char c) {
 BracketContext::BracketContext(const unsigned int& bit_context,
     int distance_limit, int stack_limit) : byte_(bit_context),
     distance_limit_(distance_limit), stack_limit_(stack_limit) {
-  brackets_ = {{'(',')'}, {'{','}'}, {'[',']'}, {'<','>'}};
+  brackets_ = {{'(',')'}, {'{','}'}, {'[',']'}, {'<','>'}, {0x02, 0x03}};
   context_ = 0;
   // Dense context space: 1 (empty) + 4 (bracket types) * 2 (single vs nested) * distance_limit_
   size_ = 1 + 8 * distance_limit_;
