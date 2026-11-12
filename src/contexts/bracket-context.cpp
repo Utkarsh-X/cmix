@@ -1,11 +1,23 @@
 #include "bracket-context.h"
+#include <algorithm>
+
+static inline unsigned int BracketType(unsigned char c) {
+  switch (c) {
+    case '(': return 0;
+    case '{': return 1;
+    case '[': return 2;
+    case '<': return 3;
+    default:  return 0;
+  }
+}
 
 BracketContext::BracketContext(const unsigned int& bit_context,
     int distance_limit, int stack_limit) : byte_(bit_context),
     distance_limit_(distance_limit), stack_limit_(stack_limit) {
   brackets_ = {{'(',')'}, {'{','}'}, {'[',']'}, {'<','>'}};
   context_ = 0;
-  size_ = 257 * distance_limit_;
+  // Dense context space: 1 (empty) + 4 (bracket types) * 4 (depth levels) * distance_limit_
+  size_ = 1 + 16 * distance_limit_;
 }
 
 void BracketContext::Update() {
@@ -21,14 +33,18 @@ void BracketContext::Update() {
   if (brackets_.find(byte_) != brackets_.end()) {
     active_.push_back(byte_);
     distance_.push_back(0);
-    if (brackets_.size() > stack_limit_) {
+    // Fix unbounded stack bug: check active_.size() instead of brackets_.size()
+    if (active_.size() > stack_limit_) {
       active_.erase(active_.begin());
       distance_.erase(distance_.begin());
     }
   }
   if (!active_.empty()) {
-    context_ = distance_limit_ * (active_[active_.size() - 1] + 1) +
-        distance_[distance_.size() - 1];
+    unsigned int b = BracketType(static_cast<unsigned char>(active_.back()));
+    unsigned int d = std::min(static_cast<unsigned int>(active_.size() - 1), 3u);
+    unsigned int dist = distance_.back();
+    if (dist >= distance_limit_) dist = distance_limit_ - 1;
+    context_ = 1 + (d * 4 + b) * distance_limit_ + dist;
   } else {
     context_ = 0;
   }
