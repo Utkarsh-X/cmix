@@ -253,7 +253,7 @@ uint M_Estimate( uint p, uint8_t ctx_s1 = 0, uint8_t ctx_s2 = 0 ) {
 
   mix2 = 0;
   mix2 = mix2*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  mix2 = (mix2<<1) + ((ctx_s2)&1);
+  mix2 = (mix2<<1) + (((ctx_s2)>>1)&1);
   mix2 = (mix2<<8) + ((pc)&255);
   mix2 = (mix2*256) + (j);
 

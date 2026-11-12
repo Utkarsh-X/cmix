@@ -428,12 +428,13 @@ float Predictor::Predict() {
   int surprise_bin = pagectx::surprise.s1;
   uint8_t ctx_s1 = static_cast<uint8_t>(((order_bin & 3) << 2) | (surprise_bin & 3));
 
-  int pc = static_cast<int>(manager_.recent_bytes_[0]);
-  int lex_bin = (pc == 32 ? 0 : (pc >= 'a' && pc <= 'z' ? 1 : (pc >= 'A' && pc <= 'Z' ? 2 : 3)));
-  float aux_p = (auxiliary_.empty() ? p : layers_[0]->Inputs()[auxiliary_[0]]);
+  // EXP-087: Fix logit-vs-probability unit mismatch (use auxiliary_average in [0,1])
+  // and replace pc-redundant lex_bin with orthogonal match-length regime.
+  int match_bin = (manager_.longest_match_ >= 3 ? 3 : static_cast<int>(manager_.longest_match_));
+  float aux_p = (auxiliary_.empty() ? p : auxiliary_average);
   float delta = std::abs(p - aux_p);
-  int dispute_bin = (delta > 0.35f ? 3 : (delta > 0.15f ? 2 : (delta > 0.05f ? 1 : 0)));
-  uint8_t ctx_s2 = static_cast<uint8_t>(((lex_bin & 3) << 2) | (dispute_bin & 3));
+  int dispute_bin = (delta > 0.25f ? 3 : (delta > 0.10f ? 2 : (delta > 0.03f ? 1 : 0)));
+  uint8_t ctx_s2 = static_cast<uint8_t>(((match_bin & 3) << 2) | (dispute_bin & 3));
 
   p = sse_.Predict(p, ctx_s1, ctx_s2);
   float final_p = (byte_mixer_override >= 0) ? (float)byte_mixer_override : p;
