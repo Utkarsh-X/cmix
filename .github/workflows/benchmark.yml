@@ -1,6 +1,9 @@
 name: CMIX Autonomous Compression Benchmark
 
 on:
+  push:
+    paths:
+      - '.github/workflows/**'
   workflow_dispatch:
     inputs:
       tier:
