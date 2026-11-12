@@ -67,6 +67,7 @@ def main():
         "/EHsc",
         "/O2",
         "/arch:AVX2",
+        "/fp:precise",
         "/GL",
         "/Gw",
         "/Gy",

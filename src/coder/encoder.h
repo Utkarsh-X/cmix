@@ -8,6 +8,7 @@
 class Encoder {
  public:
   Encoder(std::ofstream* os, Predictor* p);
+  ~Encoder();
   void Encode(int bit);
   void Flush();
 

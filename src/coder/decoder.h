@@ -8,6 +8,7 @@
 class Decoder {
  public:
   Decoder(std::ifstream* is, Predictor* p);
+  ~Decoder();
   int Decode();
 
  private:

@@ -405,7 +405,12 @@ float Predictor::Predict() {
     float p = layers_[0]->Inputs()[auxiliary_[i]];
     layers_[1]->SetStretchedInput(mixers_[0].size() + i, p);
   }
-  float p = Sigmoid::Logistic(mixers_[1][0]->Mix());
+  const float m1raw = mixers_[1][0]->Mix();
+  bitl_stage1_ = &layers_[1]->Inputs()[0];
+  bitl_n_stage1_ = 28;
+  bitl_m1raw_ = m1raw;
+  bitl_override_ = (byte_mixer_override >= 0) ? 1 : 0;
+  float p = Sigmoid::Logistic(m1raw);
   p = sse_.Predict(p);
   float final_p = (byte_mixer_override >= 0) ? (float)byte_mixer_override : p;
   last_p16_ = (unsigned int)(1.0f + 65534.0f * final_p);

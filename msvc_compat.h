@@ -14,6 +14,9 @@
 #endif
 
 #include <immintrin.h>
+#if defined(__AVX2__) && !defined(__FMA__)
+#define __FMA__ 1
+#endif
 #include <intrin.h>
 #include <stdint.h>
 #include <stddef.h>

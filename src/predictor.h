@@ -23,6 +23,11 @@ class Predictor {
   void Pretrain(int bit);
   int ChrForced() const { return char_rate::Forced(manager_.bit_context_); }
 
+  const float* bitl_stage1_ = nullptr;
+  int bitl_n_stage1_ = 0;
+  float bitl_m1raw_ = 0.0f;
+  int bitl_override_ = 0;
+
  private:
   unsigned long long GetNumModels();
   void AddModel(Model* model);
