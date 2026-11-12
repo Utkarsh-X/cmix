@@ -5079,29 +5079,22 @@ int modelPrediction(int c0,int bpos,int c4){
         x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
     }
     assert(x.mxInputs1.ncount == 528);
-    int mxA0_val = mxA[0].p1();
-    x.mxInputs2.add(mxA0_val);
-    x.mxInputs2.add(mxA[1].p1());
-    x.mxInputs2.add(mxA[2].p1());
-    x.mxInputs2.add(mxA[3].p1());
-    x.mxInputs2.add(mxA[4].p1());
-    x.mxInputs2.add(mxA[5].p1());
-    x.mxInputs2.add(mxA[6].p1());
-    x.mxInputs2.add(mxA[7].p1());
-    x.mxInputs2.add(mxA[8].p1());
-    x.mxInputs2.add(mxA[9].p1());
-    x.mxInputs2.add(stretch(lstmpr)/2); prediction_index--;
+    int mxA_vals[10];
+    for (int i = 0; i < 10; ++i) {
+        mxA_vals[i] = mxA[i].p1();
+        x.mxInputs2.add(mxA_vals[i]);
+    }
+    int lstm_half = stretch(lstmpr)/2;
+    x.mxInputs2.add(lstm_half); prediction_index--;
 
     // Pad mxInputs2 to 32 inputs
     while (x.mxInputs2.ncount < 32) x.mxInputs2.n[x.mxInputs2.ncount++] = 0;
 
-    // Populate Tier 3 inputs from Tier 1 skip and Tier 2 sub-mixers (internal: no L0 prediction overflow)
-    x.mxInputs4.add_internal(mxA0_val);
-    x.mxInputs4.add_internal(mxA1[0].p1());
-    x.mxInputs4.add_internal(mxA1[1].p1());
-    x.mxInputs4.add_internal(mxA1[2].p1());
-    x.mxInputs4.add_internal(mxA1[3].p1());
-    x.mxInputs4.add_internal(mxA1[4].p1());
+    // Populate Tier 3 inputs (16/16 active lanes: Tier 2 sub-mixers + all 10 Tier 1 skips + LSTM)
+    x.mxInputs4.add_internal(mxA_vals[0]);
+    for (int i = 0; i < 5; ++i) x.mxInputs4.add_internal(mxA1[i].p1());
+    for (int i = 1; i < 10; ++i) x.mxInputs4.add_internal(mxA_vals[i]);
+    x.mxInputs4.add_internal(lstm_half);
     while (x.mxInputs4.ncount < 16) x.mxInputs4.n[x.mxInputs4.ncount++] = 0;
 
     // Return Tier 3 meta-mixer conditioned on (wordrec::rec_bucket & 7u)
