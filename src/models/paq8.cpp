@@ -8009,9 +8009,9 @@ void XMLModel(Mixer& m, ModelStats *Stats = nullptr){
       case ReadTagName : {
         if ((*Tag).Length>0 && (B==0x09 || B==0x0A || B==0x0D || B==0x20))
           State = ReadTag;
-        else if ((B==0x3A || (B>='A' && B<='Z') || B==0x5F || (B>='a' && B<='z')) || ((*Tag).Length>0 && (B==0x2D || B==0x2E || (B>='0' && B<='9')))){
+        else if ((B>=0x80 || B==0x3A || (B>='A' && B<='Z') || B==0x5F || (B>='a' && B<='z')) || ((*Tag).Length>0 && (B==0x2D || B==0x2E || (B>='0' && B<='9')))){
           (*Tag).Length++;
-          (*Tag).Name = (*Tag).Name * 263 * 32 + (B&0xDF);
+          (*Tag).Name = (*Tag).Name * 263 * 32 + (B>=0x80 ? B : (B&0xDF));
         }
         else if (B == 0x3E){
           if ((*Tag).EndTag){
@@ -8080,7 +8080,7 @@ void XMLModel(Mixer& m, ModelStats *Stats = nullptr){
             (*Content).Type |= Link;
         }
         else if (B!=0x22 && B!=0x27 && B!=0x3D)
-          (*Attribute).Name = (*Attribute).Name * 263 * 32 + (B&0xDF);
+          (*Attribute).Name = (*Attribute).Name * 263 * 32 + (B>=0x80 ? B : (B&0xDF));
 
         cm.set(hash(pState*8+State, (*Attribute).Name, (*Tag).Attributes.Index, (*Tag).Name, (*Content).Type ));
         break;
@@ -8091,7 +8091,7 @@ void XMLModel(Mixer& m, ModelStats *Stats = nullptr){
           State = ReadTag;
         }
         else{
-          (*Attribute).Value = (*Attribute).Value* 263 * 32 + (B&0xDF);
+          (*Attribute).Value = (*Attribute).Value* 263 * 32 + (B>=0x80 ? B : (B&0xDF));
           (*Attribute).Length++;
           if ((c8&0xDFDFDFDF)==0x48545450 && ((c4>>8)==0x3A2F2F || c4==0x733A2F2F))
             (*Content).Type |= URL;
@@ -8108,7 +8108,7 @@ void XMLModel(Mixer& m, ModelStats *Stats = nullptr){
         }
         else{
           (*Content).Length++;
-          (*Content).Data = (*Content).Data * 997*16 + (B&0xDF);
+          (*Content).Data = (*Content).Data * 997*16 + (B>=0x80 ? B : (B&0xDF));
 
           DetectContent();
         }
