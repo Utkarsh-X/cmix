@@ -1,7 +1,8 @@
 #include "dictionary.h"
 
 #include <stdio.h>
-#include <unordered_set>
+#include <stdlib.h>
+#include <string.h>
 #include <string>
 
 namespace preprocessor {
@@ -30,49 +31,159 @@ void EncodeByte(unsigned char c, FILE* output) {
 }
 
 void EncodeBytes(unsigned int bytes, FILE* output) {
-  putc((unsigned char)bytes&0xFF, output);
+  putc((unsigned char)(bytes & 0xFF), output);
   if (bytes & 0xFF00) {
-    putc((unsigned char)((bytes&0xFF00)>>8), output);
+    putc((unsigned char)((bytes & 0xFF00) >> 8), output);
   } else {
     return;
   }
   if (bytes & 0xFF0000) {
-    putc((unsigned char)((bytes&0xFF0000)>>16), output);
+    putc((unsigned char)((bytes & 0xFF0000) >> 16), output);
   }
 }
 
+}  // namespace
+
+FastWordMap::FastWordMap()
+    : blob_(nullptr), blob_len_(0), blob_cap_(0),
+      off_(nullptr), len_(nullptr), code_(nullptr),
+      n_(0), cap_(0), tab_(nullptr), rtab_(nullptr), mask_(0) {}
+
+FastWordMap::~FastWordMap() {
+  if (blob_) { free(blob_); blob_ = nullptr; }
+  if (off_)  { free(off_);  off_  = nullptr; }
+  if (len_)  { free(len_);  len_  = nullptr; }
+  if (code_) { free(code_); code_ = nullptr; }
+  if (tab_)  { free(tab_);  tab_  = nullptr; }
+  if (rtab_) { free(rtab_); rtab_ = nullptr; }
+}
+
+void FastWordMap::ReserveExact(unsigned int words, unsigned int blob_bytes,
+    bool encode, bool decode) {
+  cap_ = words ? words : 1;
+  off_  = (unsigned int*)malloc(sizeof(unsigned int) * cap_);
+  len_  = (unsigned char*)malloc(sizeof(unsigned char) * cap_);
+  code_ = (unsigned int*)malloc(sizeof(unsigned int) * cap_);
+  blob_cap_ = blob_bytes ? blob_bytes : 1;
+  blob_ = (char*)malloc(blob_cap_);
+
+  mask_ = 1;
+  while (mask_ < 2 * cap_) mask_ <<= 1;
+  mask_ -= 1;
+
+  if (encode) {
+    tab_ = (unsigned int*)malloc(sizeof(unsigned int) * (mask_ + 1));
+    memset(tab_, 0, sizeof(unsigned int) * (mask_ + 1));
+  }
+  if (decode) {
+    rtab_ = (unsigned int*)malloc(sizeof(unsigned int) * (mask_ + 1));
+    memset(rtab_, 0, sizeof(unsigned int) * (mask_ + 1));
+  }
+}
+
+void FastWordMap::Add(const char* w, unsigned int len, unsigned int code,
+    bool encode, bool decode) {
+  memcpy(blob_ + blob_len_, w, len);
+  off_[n_] = blob_len_;
+  len_[n_] = (unsigned char)len;
+  code_[n_] = code;
+  blob_len_ += len;
+  ++n_;
+
+  if (encode && tab_) {
+    unsigned int h = HashWord(w, len) & mask_;
+    while (tab_[h]) h = (h + 1) & mask_;
+    tab_[h] = n_;  // 1-based index
+  }
+  if (decode && rtab_) {
+    unsigned int h = HashCode(code) & mask_;
+    while (rtab_[h]) h = (h + 1) & mask_;
+    rtab_[h] = n_;
+  }
+}
+
+bool FastWordMap::Find(const char* w, unsigned int len, unsigned int* code) const {
+  if (!tab_) return false;
+  unsigned int h = HashWord(w, len) & mask_;
+  while (tab_[h]) {
+    const unsigned int i = tab_[h] - 1;
+    if (len_[i] == len && memcmp(blob_ + off_[i], w, len) == 0) {
+      *code = code_[i];
+      return true;
+    }
+    h = (h + 1) & mask_;
+  }
+  return false;
+}
+
+bool FastWordMap::FindCode(unsigned int code, const char** w, unsigned int* len) const {
+  if (!rtab_) return false;
+  unsigned int h = HashCode(code) & mask_;
+  while (rtab_[h]) {
+    const unsigned int i = rtab_[h] - 1;
+    if (code_[i] == code) {
+      *w = blob_ + off_[i];
+      *len = len_[i];
+      return true;
+    }
+    h = (h + 1) & mask_;
+  }
+  return false;
 }
 
 Dictionary::Dictionary(FILE* dictionary, bool encode, bool decode) {
   fseek(dictionary, 0L, SEEK_END);
   unsigned long long len = ftell(dictionary);
   fseek(dictionary, 0L, SEEK_SET);
+
+  // First pass: exact count of words and characters
+  unsigned int word_count = 0;
+  unsigned int blob_chars = 0;
+  unsigned int cur_len = 0;
+  for (unsigned pos = 0; pos < len; ++pos) {
+    int c = getc(dictionary);
+    if (c >= 'a' && c <= 'z') {
+      ++cur_len;
+    } else if (cur_len > 0) {
+      ++word_count;
+      blob_chars += cur_len;
+      cur_len = 0;
+    }
+  }
+  if (cur_len > 0) {
+    ++word_count;
+    blob_chars += cur_len;
+  }
+  fseek(dictionary, 0L, SEEK_SET);
+
+  word_map_.ReserveExact(word_count, blob_chars, encode, decode);
+
   std::string line;
   int line_count = 0;
   const int kBoundary1 = 80, kBoundary2 = kBoundary1 + 3840,
       kBoundary3 = kBoundary2 + 40960, kBoundary4 = kBoundary3 + 81920;
   for (unsigned pos = 0; pos < len; ++pos) {
     unsigned char c = getc(dictionary);
-    if (c >= 'a' && c <= 'z') line += c;
-    else if (!line.empty()) {
-      if (line.size() > longest_word_) longest_word_ = line.size();
+    if (c >= 'a' && c <= 'z') {
+      line += c;
+    } else if (!line.empty()) {
+      if (line.size() > longest_word_) longest_word_ = (unsigned int)line.size();
       unsigned int bytes;
       if (line_count < kBoundary1) {
         bytes = 0x80 + line_count;
       } else if (line_count < kBoundary2) {
-        bytes = 0xD0 + ((line_count-kBoundary1) / 80);
-        bytes += (0x80 + ((line_count-kBoundary1) % 80)) << 8;
+        bytes = 0xD0 + ((line_count - kBoundary1) / 80);
+        bytes += (0x80 + ((line_count - kBoundary1) % 80)) << 8;
       } else if (line_count < kBoundary3) {
-        bytes = 0xF0 + (((line_count-kBoundary2) / 80) / 32);
-        bytes += (0xD0 + (((line_count-kBoundary2) / 80) % 32)) << 8;
-        bytes += (0x80 + ((line_count-kBoundary2) % 80)) << 16;
+        bytes = 0xF0 + (((line_count - kBoundary2) / 80) / 32);
+        bytes += (0xD0 + (((line_count - kBoundary2) / 80) % 32)) << 8;
+        bytes += (0x80 + ((line_count - kBoundary2) % 80)) << 16;
       } else if (line_count < kBoundary4) {
-        bytes = 0xD0 + (((line_count-kBoundary3) / 80) / 32);
-        bytes += (0xD0 + (((line_count-kBoundary3) / 80) % 32)) << 8;
-        bytes += (0x80 + ((line_count-kBoundary3) % 80)) << 16;
+        bytes = 0xD0 + (((line_count - kBoundary3) / 80) / 32);
+        bytes += (0xD0 + (((line_count - kBoundary3) / 80) % 32)) << 8;
+        bytes += (0x80 + ((line_count - kBoundary3) % 80)) << 16;
       }
-      if (encode) byte_map_[line] = bytes;
-      if (decode) reverse_map_[bytes] = line;
+      word_map_.Add(line.data(), (unsigned int)line.size(), bytes, encode, decode);
       ++line_count;
       line.clear();
     }
@@ -169,9 +280,9 @@ void Dictionary::EncodeWord(const std::string& word, int num_upper,
     bool next_lower, FILE* output) {
   if (num_upper > 1) putc(kUppercase, output);
   else if (num_upper == 1) putc(kCapitalized, output);
-  auto it = byte_map_.find(word);
-  if (it != byte_map_.end()) {
-    EncodeBytes(it->second, output);
+  unsigned int bytes;
+  if (word_map_.Find(word.data(), (unsigned int)word.size(), &bytes)) {
+    EncodeBytes(bytes, output);
   } else if (!EncodeSubstring(word, output)) {
     for (unsigned int i = 0; i < word.size(); ++i) {
       putc((unsigned char)word[i], output);
@@ -184,25 +295,25 @@ void Dictionary::EncodeWord(const std::string& word, int num_upper,
 
 bool Dictionary::EncodeSubstring(const std::string& word, FILE* output) {
   if (word.size() <= 7) return false;
-  unsigned int size = word.size() - 1;
+  unsigned int size = (unsigned int)word.size() - 1;
   if (size > longest_word_) size = longest_word_;
   std::string suffix = word.substr(word.size() - size, size);
   while (suffix.size() >= 7) {
-    auto it = byte_map_.find(suffix);
-    if (it != byte_map_.end()) {
+    unsigned int fast_code;
+    if (word_map_.Find(suffix.data(), (unsigned int)suffix.size(), &fast_code)) {
       for (unsigned int i = 0; i < word.size() - suffix.size(); ++i) {
         putc((unsigned char)word[i], output);
       }
-      EncodeBytes(it->second, output);
+      EncodeBytes(fast_code, output);
       return true;
     }
     suffix.erase(0, 1);
   }
   std::string prefix = word.substr(0, size);
   while (prefix.size() >= 7) {
-    auto it = byte_map_.find(prefix);
-    if (it != byte_map_.end()) {
-      EncodeBytes(it->second, output);
+    unsigned int fast_code;
+    if (word_map_.Find(prefix.data(), (unsigned int)prefix.size(), &fast_code)) {
+      EncodeBytes(fast_code, output);
       for (unsigned int i = prefix.size(); i < word.size(); ++i) {
         putc((unsigned char)word[i], output);
       }
@@ -214,11 +325,11 @@ bool Dictionary::EncodeSubstring(const std::string& word, FILE* output) {
 }
 
 int Dictionary::Decode(FILE* input) {
-  while (output_buffer_.empty()) {
+  while (buf_head_ == buf_tail_) {
     if (!AddToBuffer(input)) return -1;
   }
-  unsigned char next = output_buffer_.front();
-  output_buffer_.pop_front();
+  unsigned char next = circular_buf_[buf_head_];
+  buf_head_ = (buf_head_ + 1) & 1023;
   return next;
 }
 
@@ -230,23 +341,23 @@ bool Dictionary::AddToBuffer(FILE* input) {
     decode_upper_ = false;
     int next_c = getc(input);
     if (next_c != EOF) {
-      output_buffer_.push_back(static_cast<unsigned char>(next_c));
+      PushBuf(static_cast<unsigned char>(next_c));
     }
   } else if (c == kQuote) {
     for (int i = 1; i < 6; ++i) {
-      output_buffer_.push_back(kQuoteStr[i]);
+      PushBuf(kQuoteStr[i]);
     }
   } else if (c == kAmp) {
     for (int i = 1; i < 5; ++i) {
-      output_buffer_.push_back(kAmpStr[i]);
+      PushBuf(kAmpStr[i]);
     }
   } else if (c == kLt) {
     for (int i = 1; i < 4; ++i) {
-      output_buffer_.push_back(kLtStr[i]);
+      PushBuf(kLtStr[i]);
     }
   } else if (c == kGt) {
     for (int i = 1; i < 4; ++i) {
-      output_buffer_.push_back(kGtStr[i]);
+      PushBuf(kGtStr[i]);
     }
   } else if (c == kUppercase) {
     decode_upper_ = true;
@@ -270,16 +381,20 @@ bool Dictionary::AddToBuffer(FILE* input) {
         }
       }
     }
-    std::string word = reverse_map_[bytes];
-    for (unsigned int i = 0; i < word.size(); ++i) {
-      if (i == 0 && decode_capital_) {
-        word[i] = (word[i] - 'a') + 'A';
-        decode_capital_ = false;
+    const char* word_str = nullptr;
+    unsigned int word_len = 0;
+    if (word_map_.FindCode(bytes, &word_str, &word_len)) {
+      for (unsigned int i = 0; i < word_len; ++i) {
+        unsigned char wc = static_cast<unsigned char>(word_str[i]);
+        if (i == 0 && decode_capital_) {
+          wc = (wc - 'a') + 'A';
+          decode_capital_ = false;
+        }
+        if (decode_upper_) {
+          wc = (wc - 'a') + 'A';
+        }
+        PushBuf(wc);
       }
-      if (decode_upper_) {
-        word[i] = (word[i] - 'a') + 'A';
-      }
-      output_buffer_.push_back(word[i]);
     }
   } else {
     if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
@@ -289,9 +404,9 @@ bool Dictionary::AddToBuffer(FILE* input) {
       c = (c - 'a') + 'A';
     }
     if (decode_capital_) decode_capital_ = false;
-    output_buffer_.push_back(c);
+    PushBuf(c);
   }
   return true;
 }
 
-}
+}  // namespace preprocessor
