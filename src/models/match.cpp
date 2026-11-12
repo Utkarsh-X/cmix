@@ -17,29 +17,35 @@ Match::Match(const std::vector<unsigned char>& history,
 }
 
 const std::valarray<float>& Match::Predict() {
+  if (cur_match_ == 0) {
+    outputs_[0] = 0.5f;
+    return outputs_;
+  }
   if (cur_byte_ & bit_pos_) outputs_[0] = predictions_[match_length_];
   else outputs_[0] = 1 - predictions_[match_length_];
   return outputs_;
 }
 
 void Match::Perceive(int bit) {
-  int match = 0;
-  if (bit == ((cur_byte_ & bit_pos_) != 0)) match = 1;
-  bit_pos_ /= 2;
+  if (cur_match_ != 0) {
+    int match = (bit == ((cur_byte_ & bit_pos_) != 0)) ? 1 : 0;
+    float divisor = divisor_;
+    if (counts_[match_length_] < limit_) {
+      ++counts_[match_length_];
+      divisor = 1.0 / (counts_[match_length_] + delta_);
+    }
+    predictions_[match_length_] +=
+        (match - predictions_[match_length_]) * divisor;
 
-  float divisor = divisor_;
-  if (counts_[match_length_] < limit_) {
-    ++counts_[match_length_];
-    divisor = 1.0 / (counts_[match_length_] + delta_);
-  }
-  predictions_[match_length_] +=
-      (match - predictions_[match_length_]) * divisor;
-
-  if (match) {
-    if (match_length_ < 255) ++match_length_;
+    if (match) {
+      if (match_length_ < 255) ++match_length_;
+    } else {
+      match_length_ = 0;
+    }
   } else {
     match_length_ = 0;
   }
+  bit_pos_ /= 2;
 
   if (bit_context_ >= 128) {
     map_[div_map_.Mod(byte_context_)] = history_pos_;
