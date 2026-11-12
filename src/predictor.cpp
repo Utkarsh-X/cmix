@@ -51,6 +51,9 @@ unsigned long long Predictor::GetNumModels() {
   for (unsigned int i = 0; i < byte_mixers_.size(); ++i) {
     num += byte_mixers_[i]->NumOutputs();
   }
+  if (fast_weights_) {
+    num += fast_weights_->NumOutputs();
+  }
   return num;
 }
 
@@ -198,6 +201,10 @@ void Predictor::AddMixers() {
   }
   AddByteMixer(new ByteMixer(byte_models_.size(), manager_.bit_context_, vocab_,
       vocab_size, new Lstm(vocab_size, vocab_size, 200, 2, 100, 0.03, 10)));
+  AddAuxiliary();
+
+  // EXP-071: Pure-Online Fast-Weights Associative Memory (0 Checkpoint Bytes)
+  fast_weights_.reset(new FastWeightsModel(vocab_, 200));
   AddAuxiliary();
 
   for (int i = 0; i < 2; ++i) {
@@ -372,6 +379,13 @@ float Predictor::Predict() {
       ++input_index;
     }
   }
+  if (fast_weights_) {
+    const std::valarray<float>& outputs = fast_weights_->Predict();
+    for (unsigned int j = 0; j < outputs.size(); ++j) {
+      layers_[0]->SetInput(input_index, outputs[j]);
+      ++input_index;
+    }
+  }
   float auxiliary_average = 0;
   for (unsigned int i = 0; i < auxiliary_.size(); ++i) {
     auxiliary_average += Sigmoid::Logistic(layers_[0]->Inputs()[auxiliary_[i]]);
@@ -427,6 +441,9 @@ void Predictor::Perceive(int bit) {
   for (const auto& byte_mixer : byte_mixers_) {
     byte_mixer->Perceive(bit);
   }
+  if (fast_weights_) {
+    fast_weights_->Perceive(bit);
+  }
   E2EGrad(bit);
   const unsigned int n0 = (unsigned int)mixers_[0].size();
   if (n0 > 0 && n0 <= 64) {
@@ -474,6 +491,11 @@ void Predictor::Perceive(int bit) {
     }
     for (const auto& byte_mixer : byte_mixers_) {
       byte_mixer->ByteUpdate();
+    }
+    if (fast_weights_ && !byte_mixers_.empty()) {
+      const auto& h = byte_mixers_[0]->Hidden();
+      const float* h_ptr = (h.size() > 200) ? &h[200] : &h[0];
+      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], h_ptr);
     }
   }
   for (const auto& byte_mixer : byte_mixers_) {
