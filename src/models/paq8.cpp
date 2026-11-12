@@ -4193,6 +4193,7 @@ void nestModel(Mixer& m)
       case '}': ic -= 17; break;
       case '|': pc += 223; break;
       case '"': pc += 0x40; break;
+      case 0x08: if (((c4>>8)&0xff)!=0x0C) pc += 0x40; break;
       case '\'': pc += 0x42; if (c!=(U8)(c4>>8)) sense2^=1; else ac+=(2*sense2-1); break;
       case '\n': pc = qc = 0; break;
       case '.': pc = 0; break;
@@ -4213,8 +4214,8 @@ void nestModel(Mixer& m)
       case '=': pc += 87; if (c!=(U8)(c4>>8)) sense1^=1; else ec+=(2*sense1-1); break;
       default: matched = 0;
     }
-    if (c4==0x266C743B) uc=min(7,uc+1);
-    else if (c4==0x2667743B) uc-=(uc>0);
+    if (c4==0x266C743B || (c==0x02 && ((c4>>8)&0xff)!=0x0C)) uc=min(7,uc+1);
+    else if (c4==0x2667743B || (c==0x03 && ((c4>>8)&0xff)!=0x0C)) uc-=(uc>0);
     if (matched) bc = 0; else bc += 1;
     if (bc > 300) bc = ic = pc = qc = uc = 0;
     U64 i=0;
