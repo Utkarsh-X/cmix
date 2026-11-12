@@ -15,6 +15,34 @@ const char* kMediaWikiHeader = "<mediawiki xmlns=\"http://www.mediawiki.org/xml/
 const char* kCompactHeader = "<mediawiki>\n  ";
 const size_t kCompactHeaderLen = 14;
 
+// Floor division towards -inf (Howard Hinnant / ts_algebra::Fdiv)
+static inline long long Fdiv(long long a, long long b) {
+  long long q = a / b, r = a % b;
+  if (r != 0 && ((r < 0) != (b < 0))) --q;
+  return q;
+}
+
+// EXP-079: 2D Linear Page-ID -> Rev-ID Interpolation (Pass E1)
+static inline unsigned long long PredictB1(const std::map<unsigned long long, unsigned long long>& m, unsigned long long p) {
+  auto hi = m.lower_bound(p);
+  const bool h2 = (hi != m.end());
+  const bool h1 = (hi != m.begin());
+  if (h1 && h2) {
+    auto lo = std::prev(hi);
+    const long long q1 = static_cast<long long>(lo->first), r1 = static_cast<long long>(lo->second);
+    const long long q2 = static_cast<long long>(hi->first), r2 = static_cast<long long>(hi->second);
+    return static_cast<unsigned long long>(r1 + Fdiv((static_cast<long long>(p) - q1) * (r2 - r1), q2 - q1));
+  }
+  if (h1) {
+    auto lo = std::prev(hi);
+    return static_cast<unsigned long long>(static_cast<long long>(lo->second) + (static_cast<long long>(p) - static_cast<long long>(lo->first)));
+  }
+  if (h2) {
+    return static_cast<unsigned long long>(static_cast<long long>(hi->second) - (static_cast<long long>(hi->first) - static_cast<long long>(p)));
+  }
+  return 15898943ULL;
+}
+
 namespace {
 
 void ReplaceAll(std::string& str, const std::string& from, const std::string& to) {
@@ -95,8 +123,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   if (flags & TRANSFORM_PAGE_IDS) {
     size_t pos = 0;
     unsigned long long prev_id = 0;
-    unsigned long long last_b1_pid = 0;
-    unsigned long long last_b1_rid = 0;
+    std::map<unsigned long long, unsigned long long> b1_map;
 
     while ((pos = s.find("</title>", pos)) != std::string::npos) {
       size_t ws_start = pos + 8;
@@ -132,10 +159,9 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
               if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
                 unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
                 if (revid < 17000000ULL) {
-                  unsigned long long forecast = (last_b1_pid == 0) ? 15898943ULL : (last_b1_rid + (curr_id - last_b1_pid));
+                  unsigned long long forecast = PredictB1(b1_map, curr_id);
                   long long res = static_cast<long long>(revid) - static_cast<long long>(forecast);
-                  last_b1_pid = curr_id;
-                  last_b1_rid = revid;
+                  b1_map[curr_id] = revid;
                   std::string rev_repl;
                   if (res == 0) rev_repl = "+";
                   else rev_repl = "+" + std::to_string(res);
@@ -261,10 +287,9 @@ bool StreamingDecoder::Fill() {
         for (size_t i = 16; i < end_tag; ++i) res_str += window_[i];
         res = std::stoll(res_str);
       }
-      unsigned long long forecast = (last_b1_pid_ == 0) ? 15898943ULL : (last_b1_rid_ + (prev_id_ - last_b1_pid_));
-      unsigned long long revid = forecast + res;
-      last_b1_pid_ = prev_id_;
-      last_b1_rid_ = revid;
+      unsigned long long forecast = PredictB1(b1_map_, prev_id_);
+      unsigned long long revid = static_cast<unsigned long long>(static_cast<long long>(forecast) + res);
+      b1_map_[prev_id_] = revid;
 
       PushString("\n    <revision>\n      <id>");
       PushString(std::to_string(revid));

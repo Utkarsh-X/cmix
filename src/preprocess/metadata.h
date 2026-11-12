@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <deque>
 #include <string>
+#include <map>
 
 namespace preprocessor {
 class Dictionary;
@@ -46,6 +47,7 @@ class StreamingDecoder {
   unsigned long long prev_id_;
   unsigned long long last_b1_pid_;
   unsigned long long last_b1_rid_;
+  std::map<unsigned long long, unsigned long long> b1_map_;
   bool first_byte_;
   bool eof_;
   std::deque<char> window_;
