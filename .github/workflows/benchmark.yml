@@ -1,0 +1,65 @@
+name: CMIX Autonomous Compression Benchmark
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Benchmark Tier to Execute'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'tier1'
+          - 'tier2'
+          - 'tier3'
+      exp_id:
+        description: 'Experiment Identifier (e.g. EXP-069)'
+        required: true
+        default: 'EXP-069'
+
+jobs:
+  benchmark:
+    name: Benchmark ${{ inputs.exp_id }} on ${{ github.ref_name }}
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Code & Benchmarks
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup MSVC Toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build cmix_v21.exe (MSVC AVX2)
+        shell: cmd
+        run: |
+          python build_msvc.py
+          if not exist cmix_v21.exe exit /b 1
+
+      - name: Execute CMIX Benchmark Suite
+        shell: cmd
+        run: |
+          python benchmarks/run_benchmark.py --tier ${{ inputs.tier }} --exp ${{ inputs.exp_id }}
+
+      - name: Upload Benchmark Results & Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ inputs.exp_id }}-${{ github.run_id }}
+          path: |
+            scratch/*.cmix
+            scratch/*.log
+            scratch/summary.json
