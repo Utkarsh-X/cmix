@@ -5024,7 +5024,8 @@ int modelPrediction(int c0,int bpos,int c4){
         x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
     }
     assert(x.mxInputs1.ncount == 528);
-    x.mxInputs2.add(mxA[0].p1());
+    int mxA0_val = mxA[0].p1();
+    x.mxInputs2.add(mxA0_val);
     x.mxInputs2.add(mxA[1].p1());
     x.mxInputs2.add(mxA[2].p1());
     x.mxInputs2.add(mxA[3].p1());
@@ -5039,13 +5040,13 @@ int modelPrediction(int c0,int bpos,int c4){
     // Pad mxInputs2 to 32 inputs
     while (x.mxInputs2.ncount < 32) x.mxInputs2.n[x.mxInputs2.ncount++] = 0;
 
-    // Populate Tier 3 inputs from Tier 1 skip and Tier 2 sub-mixers
-    x.mxInputs4.add(mxA[0].p1()); // skip connection from Tier 1
-    x.mxInputs4.add(mxA1[0].p1());
-    x.mxInputs4.add(mxA1[1].p1());
-    x.mxInputs4.add(mxA1[2].p1());
-    x.mxInputs4.add(mxA1[3].p1());
-    x.mxInputs4.add(mxA1[4].p1());
+    // Populate Tier 3 inputs from Tier 1 skip and Tier 2 sub-mixers (internal: no L0 prediction overflow)
+    x.mxInputs4.add_internal(mxA0_val);
+    x.mxInputs4.add_internal(mxA1[0].p1());
+    x.mxInputs4.add_internal(mxA1[1].p1());
+    x.mxInputs4.add_internal(mxA1[2].p1());
+    x.mxInputs4.add_internal(mxA1[3].p1());
+    x.mxInputs4.add_internal(mxA1[4].p1());
     while (x.mxInputs4.ncount < 16) x.mxInputs4.n[x.mxInputs4.ncount++] = 0;
 
     // Return Tier 3 meta-mixer conditioned on (wordrec::rec_bucket & 7u)
@@ -5086,8 +5087,6 @@ void update1() {
     mxA[7].update(x.y);
     mxA[8].update(x.y);
     mxA[9].update(x.y);
-    mxA[10].update(x.y);
-    mxA[11].update(x.y);
     for (int i = 0; i < 6; ++i) mxA1[i].update(x.y);
     //printf("mixer 0 predictor count %d\n",x.mxInputs1.ncount);
     x.mxInputs1.ncount=0;
