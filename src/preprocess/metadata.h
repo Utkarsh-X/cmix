@@ -25,6 +25,41 @@ enum TransformFlags {
 // Returns true if any metadata was transformed; false if no Wikipedia metadata found.
 bool Transform(FILE* in, int len, FILE* out, int flags = TRANSFORM_ALL);
 
+// EXP-080: B2 Basis for monotonic timestamp extrapolation
+class B2Basis {
+ public:
+  enum { kN = 9 };
+  void Beobachte(long long rev, long long t) {
+    rev_[pos_] = rev; t_[pos_] = t;
+    pos_ = (pos_ + 1) % kN;
+    if (n_ < kN) ++n_;
+  }
+  bool Prognose(long long rev, long long* f) const {
+    if (n_ < 2) return false;
+    const int neu = (pos_ + kN - 1) % kN;
+    const int alt = (pos_ + kN - n_) % kN;
+    const long long dr = rev_[neu] - rev_[alt];
+    if (dr <= 0) return false;
+    const long long drev = rev - rev_[neu];
+    const long long dt = t_[neu] - t_[alt];
+    const long long kLim = 1LL << 31;
+    if (drev >= kLim || drev <= -kLim || dt >= kLim || dt <= -kLim) return false;
+    long long prod = drev * dt;
+    long long q = prod / dr, r = prod % dr;
+    if (r != 0 && ((r < 0) != (dr < 0))) --q;
+    *f = t_[neu] + q;
+    return true;
+  }
+  void Reset() {
+    pos_ = 0; n_ = 0;
+    for (int i = 0; i < kN; ++i) { rev_[i] = 0; t_[i] = 0; }
+  }
+
+ private:
+  long long rev_[kN] = {0}, t_[kN] = {0};
+  int pos_ = 0, n_ = 0;
+};
+
 // Streaming decoder that wraps a stream source (Dictionary or FILE)
 // and dynamically expands header, delta Page-IDs, B1 Rev-IDs, compact timestamps, and boilerplate tags back to canonical text.
 class StreamingDecoder {
@@ -46,6 +81,9 @@ class StreamingDecoder {
   unsigned long long prev_id_;
   unsigned long long last_b1_pid_;
   unsigned long long last_b1_rid_;
+  unsigned long long curr_revid_;
+  long long dec_prev_sec_;
+  B2Basis dec_b2_;
   bool first_byte_;
   bool eof_;
   std::deque<char> window_;

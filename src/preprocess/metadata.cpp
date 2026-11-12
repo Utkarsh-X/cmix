@@ -26,6 +26,49 @@ void ReplaceAll(std::string& str, const std::string& from, const std::string& to
   }
 }
 
+static inline long long Fdiv(long long a, long long b) {
+  long long q = a / b, r = a % b;
+  if (r != 0 && ((r < 0) != (b < 0))) --q;
+  return q;
+}
+
+static inline long long DaysFromCivil(long long y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const long long era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097LL + (long long)doe - 719468LL;
+}
+
+static inline void CivilFromDays(long long z, long long* y, unsigned* m, unsigned* d) {
+  z += 719468LL;
+  const long long era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = (unsigned)(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const long long yy = (long long)yoe + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  *d = doy - (153 * mp + 2) / 5 + 1;
+  *m = mp + (mp < 10 ? 3 : -9);
+  *y = yy + (*m <= 2);
+}
+
+static inline long long TsToSeconds(long long y, unsigned m, unsigned d, unsigned hh, unsigned mm, unsigned ss) {
+  long long days = DaysFromCivil(y, m, d);
+  return days * 86400LL + hh * 3600LL + mm * 60LL + ss;
+}
+
+static inline void SecondsToTs(long long sec, long long* y, unsigned* m, unsigned* d, unsigned* hh, unsigned* mm, unsigned* ss) {
+  long long days = Fdiv(sec, 86400LL);
+  long long rem = sec - days * 86400LL;
+  *hh = (unsigned)(rem / 3600LL);
+  rem %= 3600LL;
+  *mm = (unsigned)(rem / 60LL);
+  *ss = (unsigned)(rem % 60LL);
+  CivilFromDays(days, y, m, d);
+}
+
 }  // namespace
 
 bool Transform(FILE* in, int len, FILE* out, int flags) {
@@ -68,35 +111,17 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     ++count_bp;
   }
 
-  // 3. Timestamp Normalization (EXP-033)
-  if (flags & TRANSFORM_TIMESTAMPS) {
-    size_t pos = 0;
-    while ((pos = s.find("<timestamp>", pos)) != std::string::npos) {
-      if (pos + 31 < s.size() && s.substr(pos + 31, 12) == "</timestamp>") {
-        std::string ts = s.substr(pos + 11, 20);
-        if (ts[0] == '2' && ts[1] == '0' && ts[4] == '-' && ts[7] == '-' &&
-            ts[10] == 'T' && ts[13] == ':' && ts[16] == ':' && ts[19] == 'Z') {
-          std::string compact;
-          compact += ts[2]; compact += ts[3];   // YY
-          compact += ts[5]; compact += ts[6];   // MM
-          compact += ts[8]; compact += ts[9];   // DD
-          compact += ts[11]; compact += ts[12]; // HH
-          compact += ts[14]; compact += ts[15]; // MM
-          compact += ts[17]; compact += ts[18]; // SS
-          s.replace(pos + 11, 20, compact);
-          ++count_ts;
-        }
-      }
-      pos += 11;
-    }
-  }
-
-  // 4. Page-ID Delta Encoding (EXP-032, EXP-039) & B1 Revision-ID Forecast (EXP-040)
+  // 3 & 4. Page-ID Delta (EXP-032, EXP-039), B1 Revision-ID Forecast (EXP-040), and EXP-080 B2 Timestamp Compaction
   if (flags & TRANSFORM_PAGE_IDS) {
     size_t pos = 0;
     unsigned long long prev_id = 0;
     unsigned long long last_b1_pid = 0;
     unsigned long long last_b1_rid = 0;
+
+    B2Basis enc_b2;
+    long long prev_sec = 0;
+    unsigned long long prev_revid = 0;
+    int ts_count = 0;
 
     while ((pos = s.find("</title>", pos)) != std::string::npos) {
       size_t ws_start = pos + 8;
@@ -119,18 +144,86 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
           pos = ws_start + repl.size();
           ++count_id;
 
-          // EXP-040: B1 Revision-ID Compaction (< 17,000,000)
-          if (flags & TRANSFORM_REV_IDS) {
-            size_t next_page = s.find("<page>", pos);
-            size_t rev_pos = s.find("\n<revision><id>", pos);
-            if (rev_pos != std::string::npos && (next_page == std::string::npos || rev_pos < next_page)) {
-              size_t rid_start = rev_pos + 15;
-              size_t rid_end = rid_start;
-              while (rid_end < s.size() && s[rid_end] >= '0' && s[rid_end] <= '9') {
-                ++rid_end;
+          size_t next_page = s.find("<page>", pos);
+          size_t rev_pos = s.find("\n<revision><id>", pos);
+          if (rev_pos != std::string::npos && (next_page == std::string::npos || rev_pos < next_page)) {
+            size_t rid_start = rev_pos + 15;
+            size_t rid_end = rid_start;
+            while (rid_end < s.size() && s[rid_end] >= '0' && s[rid_end] <= '9') {
+              ++rid_end;
+            }
+            if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
+              unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
+
+              // EXP-080: Monotonic Timestamp Extrapolation & Differential Compaction
+              if (flags & TRANSFORM_TIMESTAMPS) {
+                size_t ts_pos = s.find("</id><timestamp>", rid_end);
+                if (ts_pos == rid_end) {
+                  size_t ts_val_start = ts_pos + 16;
+                  size_t ts_end = s.find("</timestamp>", ts_val_start);
+                  if (ts_end != std::string::npos && ts_end == ts_val_start + 20) {
+                    std::string ts = s.substr(ts_val_start, 20);
+                    if (ts[0] == '2' && ts[1] == '0' && ts[4] == '-' && ts[7] == '-' &&
+                        ts[10] == 'T' && ts[13] == ':' && ts[16] == ':' && ts[19] == 'Z') {
+                      long long y = atoi(ts.c_str());
+                      unsigned m = atoi(ts.c_str() + 5);
+                      unsigned d = atoi(ts.c_str() + 8);
+                      unsigned hh = atoi(ts.c_str() + 11);
+                      unsigned mm = atoi(ts.c_str() + 14);
+                      unsigned ss = atoi(ts.c_str() + 17);
+                      long long sec = TsToSeconds(y, m, d, hh, mm, ss);
+
+                      std::string ts_repl;
+                      if (ts_count == 0) {
+                        ts_repl += ts[2]; ts_repl += ts[3];
+                        ts_repl += ts[5]; ts_repl += ts[6];
+                        ts_repl += ts[8]; ts_repl += ts[9];
+                        ts_repl += ts[11]; ts_repl += ts[12];
+                        ts_repl += ts[14]; ts_repl += ts[15];
+                        ts_repl += ts[17]; ts_repl += ts[18];
+                      } else {
+                        long long dt = sec - prev_sec;
+                        long long pred = 0;
+                        bool can_b2 = (revid > prev_revid) && (revid - prev_revid <= 1000000ULL) && enc_b2.Prognose(revid, &pred);
+                        long long res_b2 = can_b2 ? (sec - pred) : 999999999LL;
+
+                        // Condition 1: Small residual fallback (|dt| <= 300s)
+                        if (std::abs(dt) <= 300) {
+                          if (dt == 0) ts_repl = ":=";
+                          else if (dt > 0) ts_repl = ":+" + std::to_string(dt);
+                          else ts_repl = ":" + std::to_string(dt);
+                        }
+                        // Condition 2: Monotonic B2 extrapolation with small residual (|res_b2| <= 300s)
+                        else if (can_b2 && std::abs(res_b2) <= 300) {
+                          if (res_b2 == 0) ts_repl = "=";
+                          else if (res_b2 > 0) ts_repl = "+" + std::to_string(res_b2);
+                          else ts_repl = std::to_string(res_b2);
+                        }
+                        // Condition 3: Fallback to literal compact 12-char
+                        else {
+                          ts_repl += ts[2]; ts_repl += ts[3];
+                          ts_repl += ts[5]; ts_repl += ts[6];
+                          ts_repl += ts[8]; ts_repl += ts[9];
+                          ts_repl += ts[11]; ts_repl += ts[12];
+                          ts_repl += ts[14]; ts_repl += ts[15];
+                          ts_repl += ts[17]; ts_repl += ts[18];
+                        }
+                      }
+
+                      enc_b2.Beobachte(revid, sec);
+                      prev_sec = sec;
+                      prev_revid = revid;
+                      ++ts_count;
+                      ++count_ts;
+
+                      s.replace(ts_val_start, 20, ts_repl);
+                    }
+                  }
+                }
               }
-              if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
-                unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
+
+              // EXP-040: B1 Revision-ID Compaction (< 17,000,000)
+              if (flags & TRANSFORM_REV_IDS) {
                 if (revid < 17000000ULL) {
                   unsigned long long forecast = (last_b1_pid == 0) ? 15898943ULL : (last_b1_rid + (curr_id - last_b1_pid));
                   long long res = static_cast<long long>(revid) - static_cast<long long>(forecast);
@@ -142,8 +235,13 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
                   s.replace(rid_start, rid_end - rid_start, rev_repl);
                   pos = rid_start + rev_repl.size();
                   ++count_rev;
+                } else {
+                  pos = rid_end;
                 }
+              } else {
+                pos = rid_end;
               }
+              continue;
             }
           }
           continue;
@@ -158,7 +256,8 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
-    : dict_(dict), in_(in), flags_(flags), prev_id_(0), last_b1_pid_(0), last_b1_rid_(0), first_byte_(true), eof_(false) {}
+    : dict_(dict), in_(in), flags_(flags), prev_id_(0), last_b1_pid_(0), last_b1_rid_(0),
+      curr_revid_(0), dec_prev_sec_(0), first_byte_(true), eof_(false) {}
 
 int StreamingDecoder::GetByte() {
   while (buf_.empty()) {
@@ -265,39 +364,82 @@ bool StreamingDecoder::Fill() {
       unsigned long long revid = forecast + res;
       last_b1_pid_ = prev_id_;
       last_b1_rid_ = revid;
+      curr_revid_ = revid;
 
       PushString("\n    <revision>\n      <id>");
       PushString(std::to_string(revid));
       Consume(end_tag);
       return true;
     }
+    if (end_tag + 5 > window_.size() && !eof_) return false;
   }
 
-  // 3b. Standard revision tag
-  if ((flags_ & TRANSFORM_BOILERPLATE) && StartsWith("\n<revision><id>")) {
-    Consume(15);
-    PushString("\n    <revision>\n      <id>");
-    return true;
-  }
+  // 3b. Standard revision tag with literal digits
+  if (StartsWith("\n<revision><id>")) {
+    size_t num_start = 15;
+    size_t num_end = num_start;
+    while (num_end < window_.size() && window_[num_end] >= '0' && window_[num_end] <= '9') ++num_end;
+    if (num_end > num_start && num_end + 5 <= window_.size() && SubstrEquals(num_end, "</id>")) {
+      std::string id_str;
+      for (size_t i = num_start; i < num_end; ++i) id_str += window_[i];
+      unsigned long long revid = std::stoull(id_str);
+      curr_revid_ = revid;
 
-  // 4a. Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
-  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>") && window_.size() >= 40 && SubstrEquals(28, "</timestamp>")) {
-    bool is_num = true;
-    for (size_t i = 16; i < 28; ++i) {
-      if (window_[i] < '0' || window_[i] > '9') { is_num = false; break; }
-    }
-    if (is_num) {
-      std::string ts = "</id>\n      <timestamp>20";
-      ts += window_[16]; ts += window_[17]; ts += '-';
-      ts += window_[18]; ts += window_[19]; ts += '-';
-      ts += window_[20]; ts += window_[21]; ts += 'T';
-      ts += window_[22]; ts += window_[23]; ts += ':';
-      ts += window_[24]; ts += window_[25]; ts += ':';
-      ts += window_[26]; ts += window_[27]; ts += "Z</timestamp>";
-      Consume(40);
-      PushString(ts);
+      PushString("\n    <revision>\n      <id>");
+      PushString(id_str);
+      Consume(num_end);
       return true;
     }
+    if (num_end + 5 > window_.size() && !eof_) return false;
+  }
+
+  // 4a. EXP-080 Timestamp after </id> (</id><timestamp>token</timestamp>)
+  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>")) {
+    size_t end_tag = 16;
+    while (end_tag < window_.size() && window_[end_tag] != '<') ++end_tag;
+    if (end_tag + 12 <= window_.size() && SubstrEquals(end_tag, "</timestamp>")) {
+      std::string token;
+      for (size_t i = 16; i < end_tag; ++i) token += window_[i];
+
+      long long sec = 0;
+      // Branch 1: Small residual fallback from previous timestamp (: prefix)
+      if (token[0] == ':') {
+        if (token == ":=") sec = dec_prev_sec_;
+        else sec = dec_prev_sec_ + std::stoll(token.substr(1));
+      }
+      // Branch 2: Monotonic B2 extrapolation residual (+, -, =)
+      else if (token[0] == '+' || token[0] == '-' || token[0] == '=') {
+        long long pred = 0;
+        dec_b2_.Prognose(curr_revid_, &pred);
+        if (token == "=") sec = pred;
+        else sec = pred + std::stoll(token);
+      }
+      // Branch 3: Literal 12-char compact timestamp (YYMMDDHHMMSS)
+      else {
+        long long y = 2000 + (token[0] - '0') * 10 + (token[1] - '0');
+        unsigned m = (token[2] - '0') * 10 + (token[3] - '0');
+        unsigned d = (token[4] - '0') * 10 + (token[5] - '0');
+        unsigned hh = (token[6] - '0') * 10 + (token[7] - '0');
+        unsigned mm = (token[8] - '0') * 10 + (token[9] - '0');
+        unsigned ss = (token[10] - '0') * 10 + (token[11] - '0');
+        sec = TsToSeconds(y, m, d, hh, mm, ss);
+      }
+
+      dec_b2_.Beobachte(curr_revid_, sec);
+      dec_prev_sec_ = sec;
+
+      long long y; unsigned m, d, hh, mm, ss;
+      SecondsToTs(sec, &y, &m, &d, &hh, &mm, &ss);
+      char buf[32];
+      sprintf(buf, "%04lld-%02u-%02uT%02u:%02u:%02uZ", y, m, d, hh, mm, ss);
+
+      PushString("</id>\n      <timestamp>");
+      PushString(buf);
+      PushString("</timestamp>");
+      Consume(end_tag + 12);
+      return true;
+    }
+    if (end_tag + 12 > window_.size() && !eof_) return false;
   }
 
   // 4b. Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
