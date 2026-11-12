@@ -458,7 +458,7 @@ PPM_CONTEXT* suff( PPM_CONTEXT* This ) { return (PPM_CONTEXT*)Indx2Ptr(This->iSu
   bool LtTextOpen;                // pText is referenced (deficit at entry > 0)
 
   int  LtLimOf( unsigned c1, unsigned c2 ) {
-    int v = ppmd_order_table::kGrenze2[ ppmd_order_table::kKlasse[c1&255u] ][ ppmd_order_table::kKlasse[c2&255u] ];
+    int v = ppmd_order_table::kGrenze3[ ppmd_order_table::kKlasse[c1&255u] ][ ppmd_order_table::kKlasse[c2&255u] ];
     if( v > _MaxOrder ) v = _MaxOrder;
     if( v < 2 ) v = 2;
     return v;
