@@ -10,6 +10,12 @@ GrammarMatch::GrammarMatch(const unsigned int& bit_context, int limit,
   fail_.fill(0);
   tgt_.fill(0);
   outputs_[0] = 0.5f;
+
+  // Domain priors for deterministic grammar transitions
+  predictions_[kFamilyPipedPostCopy * 32] = 0.90f;
+  counts_[kFamilyPipedPostCopy * 32] = 2;
+  predictions_[kFamilyClose2 * 32] = 0.98f;
+  counts_[kFamilyClose2 * 32] = 4;
 }
 
 GrammarMatch::~GrammarMatch() {}
@@ -95,7 +101,15 @@ void GrammarMatch::BracketAdvance(unsigned char c) {
         } else {
           br_state_ = kBrIdle;
         }
-      } else if (c == ']' || AbortClass(c) || tgt_len_ >= kTargetCap) {
+      } else if (c == ']') {
+        // First closing bracket of non-piped link [[Target]]
+        // The NEXT byte is guaranteed to be the second ']'
+        if (tgt_len_ > 0) {
+          br_state_ = kBrClose2;
+        } else {
+          br_state_ = kBrIdle;
+        }
+      } else if (AbortClass(c) || tgt_len_ >= kTargetCap) {
         br_state_ = kBrIdle;
       } else {
         tgt_[tgt_len_++] = c;
@@ -103,7 +117,7 @@ void GrammarMatch::BracketAdvance(unsigned char c) {
       break;
     case kBrLabel:
       if (c == ']') {
-        br_state_ = kBrIdle;
+        br_state_ = kBrClose2;
       } else if (c == '|' || AbortClass(c)) {
         br_state_ = kBrIdle;
       } else if (label_j_ < tgt_len_ && c == tgt_[label_j_]) {
@@ -118,7 +132,9 @@ void GrammarMatch::BracketAdvance(unsigned char c) {
       break;
     case kBrPostCopy:
       if (c == ']') {
-        br_state_ = kBrIdle;
+        // First closing bracket of piped link [[Target|Label]]
+        // The NEXT byte is guaranteed to be the second ']'
+        br_state_ = kBrClose2;
       } else if (AbortClass(c)) {
         br_state_ = kBrIdle;
       } else {
@@ -126,8 +142,14 @@ void GrammarMatch::BracketAdvance(unsigned char c) {
       }
       ++label_pos_;
       break;
+    case kBrClose2:
+      // Second closing bracket has arrived
+      br_state_ = kBrIdle;
+      break;
     case kBrScan:
-      if (c == ']' || AbortClass(c) || ++label_pos_ > kTargetCap) {
+      if (c == ']') {
+        br_state_ = kBrClose2;
+      } else if (AbortClass(c) || ++label_pos_ > kTargetCap) {
         br_state_ = kBrIdle;
       }
       break;
@@ -164,6 +186,10 @@ void GrammarMatch::ExportExpectation() {
   } else if (br_state_ == kBrPostCopy) {
     expected_byte_ = ']';
     state_ = kFamilyPipedPostCopy * 32;
+    have_expectation_ = true;
+  } else if (br_state_ == kBrClose2) {
+    expected_byte_ = ']';
+    state_ = kFamilyClose2 * 32;
     have_expectation_ = true;
   } else if (!in_title_ && echo_k_ >= kEchoArm && echo_k_ < title_len_) {
     expected_byte_ = title_[echo_k_];

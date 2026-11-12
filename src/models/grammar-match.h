@@ -19,8 +19,8 @@ class GrammarMatch : public Model {
   int StateIndex() const { return state_; }
 
  private:
-  enum Family { kFamilyPiped = 0, kFamilyPipedPostCopy = 1, kFamilyEcho = 2 };
-  enum BracketState { kBrIdle, kBrTarget, kBrLabel, kBrPostCopy, kBrScan };
+  enum Family { kFamilyPiped = 0, kFamilyPipedPostCopy = 1, kFamilyEcho = 2, kFamilyClose2 = 3 };
+  enum BracketState { kBrIdle, kBrTarget, kBrLabel, kBrPostCopy, kBrClose2, kBrScan };
 
   void ParseByte(unsigned char c);
   void BracketAdvance(unsigned char c);
