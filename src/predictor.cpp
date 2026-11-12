@@ -422,11 +422,14 @@ float Predictor::Predict() {
   }
   float p = Sigmoid::Logistic(mixers_[1][0]->Mix());
 
-  // EXP-081: Zero-RAM SSE context conditioning (Surprise x PPMd order & Dispute x Lexical)
+  // EXP-101: Zero-RAM SSE PPMd Joint Confidence Manifold (Order x Escape)
   int ppmd_order = ppmd_ ? ppmd_->Order() : 0;
-  int order_bin = (ppmd_order >= 12 ? 3 : (ppmd_order >= 5 ? 2 : (ppmd_order >= 2 ? 1 : 0)));
+  int ppmd_esc = ppmd_ ? ppmd_->Escapes() : 0;
+  int conf_bin = (ppmd_order >= 8 && ppmd_esc == 0) ? 3 :
+                 ((ppmd_order >= 8) || (ppmd_order >= 3 && ppmd_esc == 0)) ? 2 :
+                 (ppmd_order >= 2) ? 1 : 0;
   int surprise_bin = pagectx::surprise.s1;
-  uint8_t ctx_s1 = static_cast<uint8_t>(((order_bin & 3) << 2) | (surprise_bin & 3));
+  uint8_t ctx_s1 = static_cast<uint8_t>(((conf_bin & 3) << 2) | (surprise_bin & 3));
 
   // EXP-087: Fix logit-vs-probability unit mismatch (use auxiliary_average in [0,1])
   // and replace pc-redundant lex_bin with orthogonal match-length regime.

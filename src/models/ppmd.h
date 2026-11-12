@@ -15,6 +15,7 @@ class PPMD : public ByteModel {
       const std::vector<bool>& vocab);
   void ByteUpdate();
   int Order() const;
+  int Escapes() const;
  private:
   const unsigned int& byte_;
   std::unique_ptr<ppmd_Model> ppmd_model_;

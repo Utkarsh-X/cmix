@@ -1382,4 +1382,8 @@ int PPMD::Order() const {
   return ppmd_model_ ? ppmd_model_->LtJ : 0;
 }
 
+int PPMD::Escapes() const {
+  return ppmd_model_ ? ppmd_model_->LtE : 0;
+}
+
 } // namespace PPMD
