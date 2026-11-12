@@ -100,7 +100,7 @@ inline int min(int a, int b) {return a<b?a:b;}
 inline int max(int a, int b) {return a<b?b:a;}
 #endif
 
-int num_models = 436; // EXP-059a: 431 active predictions + 5 cascaded DCSM mix() outputs
+int num_models = 444; // EXP-077: 436 baseline + 8 cmLink predictions (ContextMap2 C=2)
 std::valarray<float> model_predictions(0.5f, num_models);
 unsigned int prediction_index = 0;
 float conversion_factor = 1.0 / 4095;
@@ -3430,6 +3430,8 @@ ContextMap1 cmC1[8];
 // large state memory, per context max 14 uniqe contexts state sets
 // for large amount of large contexts
 ContextMap2 cmC2[18];
+ContextMap2 cmLink;
+U32 link_start_pos = 0, link_pipe_pos = 0;
 APM<131072> apmA0;
 APM<0x8000*2>  apmA1;
 APM<0x8000*2>  apmA2;
@@ -3572,8 +3574,8 @@ void PredictorInit() {
     invariants::Reset();
     skipSeeExternal = false;
 
-    // 500 baseline + 4 EXP-060 maps1/2 + 24 EXP-059a DCSM = 528 (already multiple of 16, <= 560)
-    x.mxInputs1.ncount=((504 + 24) + 15) & -16; // 528
+    // EXP-077: 528 baseline + 10 cmLink (ContextMap2 C=2) = 538 -> 544 (multiple of 16, <= 560)
+    x.mxInputs1.ncount = 544;
     x.mxInputs2.ncount=32;
     x.mxInputs4.ncount=16;
 
@@ -3637,6 +3639,10 @@ void PredictorInit() {
     cmC1[6].Init(1*16*4096,1|(c_r[5]<<8)|(c_s[5]<<16),c_s3[5],&STA6[0][0],c_s4[5],0,0,&st2_p1[0]);
 
     cmC1[7].Init(     16*4096,4|(c_r[12]<<8)|(c_s[12]<<16),c_s3[12],&STA2[0][0],c_s4[12],0,1,&st2_p1[0]);
+
+    // EXP-077: cmLink ContextMap2 (64*4096 entries, C=2, skip2=0)
+    cmLink.Init(64*4096, 2|(c_r[13]<<8)|(c_s[13]<<16), c_s3[13], &STA6[0][0], c_s4[13], 0x00, 0, &st2_p1[0]);
+    link_start_pos = link_pipe_pos = 0;
 
     brcxt.Init(&brackets[0],8);
     qocxt.Init(&quotes[0],4,true);
@@ -4571,6 +4577,13 @@ int modelPrediction(int c0,int bpos,int c4){
         worcxt.removeWordsL(8,LESSTHAN,GREATERTHAN);
         worcxt1.removeWordsL(8,LESSTHAN,GREATERTHAN);
 
+        // EXP-077: [[target|text]] tracking for cmLink alignment
+        if (c1==SQUAREOPEN && c2==SQUAREOPEN) { link_start_pos=pos; link_pipe_pos=0; }
+        else if (link_start_pos) {
+            if (c1==VERTICALBAR && brcxt.cxt==SQUAREOPEN) link_pipe_pos=pos;
+            else if (c1==SQUARECLOSE || c1==LF || pos-link_start_pos>400) link_start_pos=link_pipe_pos=0;
+        }
+
         // Indirect
         indirectWord=(c4>>8)&0xffff;
         t2[indirectWord]=(t2[indirectWord]<<8)|c1;
@@ -4838,6 +4851,19 @@ int modelPrediction(int c0,int bpos,int c4){
             cmC1[7].set((indirectWord0Pos&0xffff)*191+ word0+(stream3bR & 63));
         }
 
+        // EXP-077: cmLink Context Setting (target byte aligned with next display byte)
+        {
+            U32 nd = link_pipe_pos - link_start_pos, noff = pos - link_pipe_pos;
+            if (link_pipe_pos && link_start_pos && brcxt.cxt == SQUAREOPEN &&
+                nd >= 2 && nd <= 200 && noff < 64) {
+                cmLink.set(hash(0x4C31u, buf(nd), std::min(noff, 31u)));
+                cmLink.set(hash(0x4C32u, buf(nd) * 256u + buf(nd - 1), 0));
+            } else {
+                cmLink.sets();
+                cmLink.sets();
+            }
+        }
+
         scmA[0].set(c1);
         scmA[1].set(c2*(isParagraph));
         scmA[2].set((indirectWord&0xffffff)>>16);
@@ -4913,6 +4939,7 @@ int modelPrediction(int c0,int bpos,int c4){
     cmC2[17].mix();
     cmC1[6].mix();
     cmC1[7].mix();
+    cmLink.mix(); // EXP-077: cmLink prediction mixing (+8 model_predictions, +10 mxInputs1)
     rcmA[0].mix();
 
     AddPrediction(squash(64));  // FP mixer bias
@@ -5075,10 +5102,10 @@ int modelPrediction(int c0,int bpos,int c4){
     dcsm2.mix();
     dcsmN.mix();
 
-    while (x.mxInputs1.ncount < 528) {
+    while (x.mxInputs1.ncount < 544) {
         x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
     }
-    assert(x.mxInputs1.ncount == 528);
+    assert(x.mxInputs1.ncount == 544);
     int mxA0_val = mxA[0].p1();
     x.mxInputs2.add(mxA0_val);
     x.mxInputs2.add(mxA[1].p1());
