@@ -10,24 +10,28 @@
 
 #include "byte-model.h"
 
-// EXP-071: Pure-Online Fast-Weights Linear Associative Memory (0 Checkpoint Bytes)
-// Maintains an online rank-1 associative perturbation matrix W in R^{256 x D}
-// initialized to all zeros. Updates per-byte via surrogate cross-entropy
-// backpropagation with Normalized Least Mean Squares (NLMS) and FW-ROW
-// per-feature RMS preconditioning.
+// EXP-078: Adaptive Online Learning & Momentum for Associative Memory (0 Checkpoint Bytes)
+// Implements an asymmetric rank-4 associative bottleneck (W = U * V^T) where
+// V in R^{D x 4} is procedurally initialized to an orthonormal DCT-II basis (0 checkpoint bytes)
+// and U in R^{256 x 4} is zero-initialized. Features online diagonal second-moment
+// preconditioning (AVX2 Adam/RMSProp) and surprise-gated momentum with boundary friction.
 class FastWeightsEngine {
  public:
+  static constexpr int RANK = 4;
+
   explicit FastWeightsEngine(int feat_dim = 200, int vocab_size = 256);
 
-  // Computes logits = W * feat + b, applies softcap(15), and calculates
-  // normalized softmax byte probabilities across valid vocab symbols.
+  // Computes latent bottleneck q = V^T * feat (AVX2), logits z = U * q + b, applies softcap(15),
+  // and calculates normalized softmax byte probabilities across valid vocab symbols.
   void Forward(const float* feat, const std::vector<bool>& vocab);
 
-  // Executes online surrogate backpropagation given observed ground-truth byte:
+  // Executes online surrogate backpropagation with surprise-gated momentum and diagonal second-moments:
   // dl = (p - 1_y) * (1 - tanh(z/15)^2)
-  // sh = FW-ROW preconditioned features
-  // W -= eta * dl (outer product) sh
+  // delta_q = U^T * dl (backpropagated latent error)
+  // Updates U and V with AVX2 vectorized Adam / RMSProp updates.
   void Update(uint8_t target_byte);
+
+  void ResetMomentum();
 
   const std::vector<float>& Probs() const { return probs_; }
   float Prob(int o) const { return probs_[o]; }
@@ -38,17 +42,21 @@ class FastWeightsEngine {
   int feat_dim_;
   int vocab_size_;
   uint64_t step_t_ = 0;
+  float avg_loss_ = 4.0f;
 
-  // Synaptic weight matrix: row i is weights for symbol i (size: vocab_size_ * feat_dim_)
-  // Strictly zero-initialized at process start -> 0 checkpoint bytes overhead!
-  std::vector<float> W_;
-  std::vector<float> b_;
+  // Rank-4 Bottleneck: U is V x 4, V_mat is D x 4
+  std::vector<float> U_;      // V x RANK
+  std::vector<float> b_;      // V
+  std::vector<float> V_mat_;  // D x RANK
 
-  // Per-feature running RMS variance for FW-ROW preconditioning
-  std::vector<float> v_;
+  // Adaptive Second-Moment & Momentum Accumulators
+  std::vector<float> m_U_, v_U_;
+  std::vector<float> m_V_, v_V_;
 
-  // Stored inputs from step t used for step t update
+  // Feature statistics & activations
+  std::vector<float> v_feat_;
   std::vector<float> h_prev_;
+  std::vector<float> q_prev_;
   std::vector<float> logits_;
   std::vector<float> lc_;
   std::vector<float> probs_;
@@ -64,6 +72,8 @@ class FastWeightsModel : public ByteModel {
 
   // ByteUpdate override (resets bit interval [0, 255])
   void ByteUpdate() override;
+
+  void ResetMomentum() { engine_.ResetMomentum(); }
 
   FastWeightsEngine& Engine() { return engine_; }
   const FastWeightsEngine& Engine() const { return engine_; }
