@@ -18,6 +18,7 @@
 #include "contexts/bit-context.h"
 #include "contexts/combined-context.h"
 #include "contexts/page_contexts.h"
+#include "contexts/template-context.h"
 
 #include <vector>
 #include <stdlib.h>
@@ -36,6 +37,7 @@ Predictor::Predictor(const std::vector<bool>& vocab) : manager_(),
   AddDirect();
   AddMatch();
   AddGrammarMatch();
+  AddTemplate();
   AddDoubleIndirect();
   AddMixers();
 }
@@ -177,6 +179,15 @@ void Predictor::AddGrammarMatch() {
   AddModel(new GrammarMatch(manager_.bit_context_, 200, 0.5f));
 }
 
+void Predictor::AddTemplate() {
+  template_context_ = &manager_.AddContext(std::unique_ptr<Context>(
+      new TemplateContext(manager_.bit_context_)));
+  AddModel(new Direct(template_context_->GetContext(), manager_.bit_context_,
+      30, 0, template_context_->Size()));
+  AddModel(new Indirect(manager_.nonstationary_, template_context_->GetContext(),
+      manager_.bit_context_, 300, manager_.shared_map_));
+}
+
 void Predictor::AddDoubleIndirect() {
   float delta = 400;
   std::vector<std::vector<unsigned int>> model_params = {{1, 8, 1, 8},
@@ -237,6 +248,9 @@ void Predictor::AddMixers() {
   AddMixer(0, manager_.longest_match_, 0.0005);
   AddMixer(0, manager_.wrt_context_, 0.002);
   AddMixer(0, manager_.auxiliary_context_, 0.0005);
+  if (template_context_) {
+    AddMixer(0, template_context_->GetContext(), 0.001);
+  }
 
   std::vector<int> map(256, 0);
   for (int i = 0; i < 256; ++i) {

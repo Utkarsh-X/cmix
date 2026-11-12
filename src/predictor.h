@@ -41,6 +41,7 @@ class Predictor {
   void AddDirect();
   void AddMatch();
   void AddGrammarMatch();
+  void AddTemplate();
   void AddDoubleIndirect();
   void AddMixers();
   void E2EGrad(int bit);
@@ -57,6 +58,7 @@ class Predictor {
   std::vector<std::unique_ptr<ByteMixer>> byte_mixers_;
   std::unique_ptr<FastWeightsModel> fast_weights_;
   PPMD::PPMD* ppmd_ = nullptr;
+  const Context* template_context_ = nullptr;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
 };
