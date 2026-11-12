@@ -21,6 +21,9 @@ class Lstm {
   std::valarray<float>& Perceive(unsigned int input);
   std::valarray<float>& Predict(unsigned int input);
   void SetInput(const std::valarray<float>& input);
+  const std::valarray<float>& Hidden() const { return hidden_; }
+  unsigned int NumCells() const { return num_cells_; }
+  unsigned int NumLayers() const { return (unsigned int)layers_.size(); }
   //void SaveToDisk(const std::string& path);
   //void LoadFromDisk(const std::string& path);
 

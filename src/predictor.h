@@ -8,6 +8,7 @@
 #include "mixer/sse.h"
 #include "models/model.h"
 #include "models/byte-model.h"
+#include "models/fast_weights.h"
 #include "context-manager.h"
 #include "char_rate.h"
 
@@ -53,6 +54,7 @@ class Predictor {
   ContextManager manager_;
   Sigmoid sigmoid_;
   std::vector<std::unique_ptr<ByteMixer>> byte_mixers_;
+  std::unique_ptr<FastWeightsModel> fast_weights_;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
 };

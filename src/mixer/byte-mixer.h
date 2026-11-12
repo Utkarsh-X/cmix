@@ -13,6 +13,7 @@ class ByteMixer : public ByteModel {
       const std::vector<bool>& vocab, unsigned int vocab_size, Lstm* lstm);
   void SetInput(int index, float val);
   void ByteUpdate();
+  const std::valarray<float>& Hidden() const { return lstm_->Hidden(); }
 
  private:
   std::unique_ptr<Lstm> lstm_;
