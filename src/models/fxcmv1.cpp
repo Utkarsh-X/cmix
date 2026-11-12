@@ -222,7 +222,8 @@ struct BlockData {
     int c0shift_bpos;
     
     Inputs<S> mxInputs1; // array of inputs, for two layers
-    Inputs<32> mxInputs2;
+    Inputs<64> mxInputs2;
+    Inputs<64> mxInputs4;
     void Init(){
         y=0 ,c0=1, c4=0,bpos=0,blpos=0,bposshift=0,c0shift_bpos=0 ;
     }
@@ -3418,6 +3419,7 @@ int pr; // Our most important variable - final prediction
 StateMap1 smA[3];
 SmallStationaryContextMap scmA[7];   // 1x7 inputs fp
 Mixer1 mxA[12]; 
+Mixer1 mxA1[6]; // Tier 2 sub-mixers (0..4) and Tier 3 meta-mixer (5) 
 // Predictors are:
 // medium state memory, per context max 7 uniqe contexts state sets
 // for average sized contexts
@@ -3572,15 +3574,28 @@ void PredictorInit() {
 
     // 500 baseline + 4 EXP-060 maps1/2 + 24 EXP-059a DCSM = 528 (already multiple of 16, <= 560)
     x.mxInputs1.ncount=((504 + 24) + 15) & -16; // 528
-    x.mxInputs2.ncount=(8+15)&-16;
+    x.mxInputs2.ncount=32;
+    x.mxInputs4.ncount=16;
 
     // Provide inputs array info to mixers
     for (int i=0;i<10;i++)
          mxA[i].setTxWx(x.mxInputs1.ncount,&x.mxInputs1.n[0]);
 
-    // Final mixer
+    // Final mixer (legacy fallback)
     mxA[10].setTxWx(x.mxInputs2.ncount,&x.mxInputs2.n[0]);
     mxA[11].setTxWx(x.mxInputs2.ncount,&x.mxInputs2.n[0]);
+
+    // EXP-068: Tier 2 sub-mixers and Tier 3 meta-mixer
+    mxA1[0].Init(8*7*4, 6, 0, 4);
+    mxA1[1].Init(    1, 6, 0, 4);
+    mxA1[2].Init( 2048, 6, 1, 4);
+    mxA1[3].Init( 2048, 6, 1, 4);
+    mxA1[4].Init( 2048, 6, 1, 4);
+    mxA1[5].Init( 2048, 6, 1, 4); // Conditioned on (wordrec::rec_bucket & 7u)
+
+    for (int i=0;i<5;i++)
+        mxA1[i].setTxWx(x.mxInputs2.ncount,&x.mxInputs2.n[0]);
+    mxA1[5].setTxWx(x.mxInputs4.ncount,&x.mxInputs4.n[0]);
 
     cmC2[0].Init( 8*4096*4096,3|(c_r[0]<<8)|(c_s[0]<<16),c_s3[0],&STA6[0][0],c_s4[0],0xf0,1,&st2_p1[0]);
     cmC2[1].Init(16*4096*4096,1|(c_r[1]<<8)|(c_s[1]<<16),c_s3[1],&STA6[0][0],c_s4[1],0xf0,1,&st2_p1[0]);
@@ -4964,6 +4979,14 @@ int modelPrediction(int c0,int bpos,int c4){
     // was last byte a word
     mxA[10].cxt=(ordX*8 + (BrFcIdx?1:0)*4 + (stream2b&3))*2+(words&1);
 
+    // EXP-068: Sub-mixers and meta-mixer contexts
+    mxA1[0].cxt=(ordX*8 + (BrFcIdx?1:0)*4 + (stream2b&3))*2+(words&1);
+    mxA1[1].cxt=0;
+    mxA1[2].cxt=stream2b&0x3f;
+    mxA1[3].cxt=(stream2b&3)*4+wrt_2b[c0b&255];
+    mxA1[4].cxt=ordX*4+wrt_2b[c0b&255];
+    mxA1[5].cxt=(int)(wordrec::rec_bucket & 7u);
+
     // mixer 4 
     // at bpos=0   context is bit xxxxxxxx from c0, first char type state(0,1) xxxx1xxx, 2 bit2word            1111xxxx
     // at bpos=1   context is bit 1xxxxxxx from c0, first char type state(0,1) xxxx1xxx, 1 bit3word            x111xxxx, bit pos xxxxx111
@@ -5056,7 +5079,8 @@ int modelPrediction(int c0,int bpos,int c4){
         x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
     }
     assert(x.mxInputs1.ncount == 528);
-    x.mxInputs2.add(mxA[0].p1());
+    int mxA0_val = mxA[0].p1();
+    x.mxInputs2.add(mxA0_val);
     x.mxInputs2.add(mxA[1].p1());
     x.mxInputs2.add(mxA[2].p1());
     x.mxInputs2.add(mxA[3].p1());
@@ -5067,7 +5091,21 @@ int modelPrediction(int c0,int bpos,int c4){
     x.mxInputs2.add(mxA[8].p1());
     x.mxInputs2.add(mxA[9].p1());
     x.mxInputs2.add(stretch(lstmpr)/2); prediction_index--;
-    return squash((mxA[10].p1()*7+mxA[11].p1()+4)>>3);
+
+    // Pad mxInputs2 to 32 inputs
+    while (x.mxInputs2.ncount < 32) x.mxInputs2.n[x.mxInputs2.ncount++] = 0;
+
+    // Populate Tier 3 inputs from Tier 1 skip and Tier 2 sub-mixers (internal: no L0 prediction overflow)
+    x.mxInputs4.add_internal(mxA0_val);
+    x.mxInputs4.add_internal(mxA1[0].p1());
+    x.mxInputs4.add_internal(mxA1[1].p1());
+    x.mxInputs4.add_internal(mxA1[2].p1());
+    x.mxInputs4.add_internal(mxA1[3].p1());
+    x.mxInputs4.add_internal(mxA1[4].p1());
+    while (x.mxInputs4.ncount < 16) x.mxInputs4.n[x.mxInputs4.ncount++] = 0;
+
+    // Return Tier 3 meta-mixer conditioned on (wordrec::rec_bucket & 7u)
+    return mxA1[5].p();
 }
 
 int rate=6;
@@ -5104,12 +5142,12 @@ void update1() {
     mxA[7].update(x.y);
     mxA[8].update(x.y);
     mxA[9].update(x.y);
-    mxA[10].update(x.y);
-    mxA[11].update(x.y);
+    for (int i = 0; i < 6; ++i) mxA1[i].update(x.y);
     //printf("mixer 0 predictor count %d\n",x.mxInputs1.ncount);
     x.mxInputs1.ncount=0;
     //printf("mixer 1 predictor count %d\n",x.mxInputs2.ncount);
     x.mxInputs2.ncount=0;
+    x.mxInputs4.ncount=0;
     // This part is from paq8hp12
     if (fails&0x00000080) --failcount;
     fails=fails*2;
