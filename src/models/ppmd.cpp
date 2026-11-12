@@ -1359,6 +1359,8 @@ void ppmd_UpdateByte( uint c ) {
 #pragma pack()
 
 unsigned long long counter_ = 0;
+int ppmd_order = 0;
+int ppmd_escapes = 0;
 
 PPMD::PPMD(int order, int memory, const unsigned int& bit_context,
     const std::vector<bool>& vocab) : ByteModel(vocab), byte_(bit_context) {
@@ -1369,6 +1371,10 @@ PPMD::PPMD(int order, int memory, const unsigned int& bit_context,
 void PPMD::ByteUpdate() {
   ++counter_;
   ppmd_model_->ppmd_UpdateByte(byte_);
+  ppmd_order = ppmd_model_->LtLim - ppmd_model_->OrderFall;
+  if (ppmd_order < 0) ppmd_order = 0;
+  ppmd_escapes = ppmd_model_->LtE;
+  if (ppmd_escapes < 0) ppmd_escapes = 0;
   ppmd_model_->ppmd_PrepareByte();
   for (int i = 0; i < 256; ++i) {
     probs_[i] = ppmd_model_->sqp[i];

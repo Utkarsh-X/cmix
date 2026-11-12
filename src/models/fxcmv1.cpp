@@ -51,7 +51,18 @@ typedef __m256i YMM;
 extern const U8 wrt_2b[256];
 extern const U8 wrt_3b[256];
 extern int lstmpr, lstmex;
+namespace PPMD {
+  extern int ppmd_order;
+  extern int ppmd_escapes;
+}
 extern char* dictionary_path;
+
+static inline U32 ppmd_delta() {
+  if (PPMD::ppmd_escapes >= 3) return 0x9E3779B9u;
+  if (PPMD::ppmd_escapes == 0 && PPMD::ppmd_order >= 16) return 0x6C62272Eu;
+  return 0u;
+}
+
 unsigned long long wrtcxt=0;
 // Map 8 bit byte to 2 bit value (3 - upper 2 bits, adjusted)
  const U8 wrt_2b[256]={
@@ -4107,8 +4118,9 @@ int modelPrediction(int c0,int bpos,int c4){
             cmC2[0].set(t[i]);
         }
         cmC2[1].set(t[6]);
-        cmC2[2].set(t[8]);
-        cmC2[3].set(t[13]);
+        const U32 pdelta = ppmd_delta();
+        cmC2[2].set(t[8] + pdelta);
+        cmC2[3].set(t[13] + pdelta);
 
         words=words<<1;
         spaces=spaces<<1;
@@ -4884,6 +4896,8 @@ int modelPrediction(int c0,int bpos,int c4){
     ordX=ordX+cmC2[1].mix();
     ordX=ordX+cmC2[2].mix();
     ordX=ordX+cmC2[3].mix();
+    if (PPMD::ppmd_escapes >= 3 && ordX > 2) ordX = 2;
+    else if (PPMD::ppmd_escapes == 0 && PPMD::ppmd_order >= 16 && ordX < 5) ordX++;
     ordW=cmC2[4].mix();
     ordW=ordW+cmC2[5].mix();
     if (ordW>3) ordW=3;
