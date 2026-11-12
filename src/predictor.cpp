@@ -204,8 +204,8 @@ void Predictor::AddMixers() {
       vocab_size, new Lstm(vocab_size, vocab_size, 200, 2, 100, 0.03, 10)));
   AddAuxiliary();
 
-  // EXP-071: Pure-Online Fast-Weights Associative Memory (0 Checkpoint Bytes)
-  fast_weights_.reset(new FastWeightsModel(vocab_, 200));
+  // EXP-091: Dual-Layer Fast-Weights Associative Memory (LSTM L0 + L1 = 400 dims)
+  fast_weights_.reset(new FastWeightsModel(vocab_, 400));
   AddAuxiliary();
 
   for (int i = 0; i < 2; ++i) {
@@ -510,7 +510,7 @@ void Predictor::Perceive(int bit) {
     }
     if (fast_weights_ && !byte_mixers_.empty()) {
       const auto& h = byte_mixers_[0]->Hidden();
-      const float* h_ptr = (h.size() > 200) ? &h[200] : &h[0];
+      const float* h_ptr = &h[0];
       fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], h_ptr);
     }
   }
