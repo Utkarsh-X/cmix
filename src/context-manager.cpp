@@ -39,7 +39,7 @@ void ContextManager::UpdateWords() {
     words_[0] = words_[0] * 997*16 + c;
     words_[0] &= 0xfffffff;
     words_[1] = words_[1] * 263*32 + c;
-  } else {
+  } else if (words_[1] != 0) {
     for (int i = 6; i >= 2; --i) {
       words_[i] = words_[i-1];
     }
