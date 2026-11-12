@@ -20,6 +20,8 @@
 #include "fxcmv1.h"
 #include "../contexts/page_contexts.h"
 #include "../contexts/word_recency.h"
+#include "../contexts/invariants.h"
+#include "../ds/demand_buffer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,7 +222,8 @@ struct BlockData {
     int c0shift_bpos;
     
     Inputs<S> mxInputs1; // array of inputs, for two layers
-    Inputs<32> mxInputs2;
+    Inputs<64> mxInputs2;
+    Inputs<64> mxInputs4;
     void Init(){
         y=0 ,c0=1, c4=0,bpos=0,blpos=0,bposshift=0,c0shift_bpos=0 ;
     }
@@ -373,6 +376,8 @@ int wfgets(char *str, int count, FILE  *fp) {
 }
 char *s;
 char *dictW[65536];
+U32 cwEXTERNAL=0, cwLINKS=0, cwSEE=0, cwALSO=0, cwREFERENCES=0, cwBIBLIOGRAPHY=0;
+bool skipSeeExternal=false;
 int codeword2sym[256]; 
 int dict1size=80;
 int dict2size=32;
@@ -386,6 +391,12 @@ void loaddict(FILE  *file){
         if (line_count < 65536) {
             dictW[line_count]=(char *)malloc(len);
             memcpy(dictW[line_count],  s, len);
+            if (cwEXTERNAL==0 && strcmp(dictW[line_count], "external")==0) cwEXTERNAL=line_count;
+            else if (cwLINKS==0 && strcmp(dictW[line_count], "links")==0) cwLINKS=line_count;
+            else if (cwSEE==0 && strcmp(dictW[line_count], "see")==0) cwSEE=line_count;
+            else if (cwALSO==0 && strcmp(dictW[line_count], "also")==0) cwALSO=line_count;
+            else if (cwREFERENCES==0 && strcmp(dictW[line_count], "references")==0) cwREFERENCES=line_count;
+            else if (cwBIBLIOGRAPHY==0 && strcmp(dictW[line_count], "bibliography")==0) cwBIBLIOGRAPHY=line_count;
             line_count++;
         }
     }
@@ -1684,6 +1695,7 @@ int __attribute__ ((noinline))  mix() {
 template <const int S=256>
 struct  APM {
     int index;     // last p, context
+    static constexpr int mask = S - 1;
     U16 t[S*33];        // [N][33]:  p, context -> p
 
     int p(int pr=2048, int cxt=0, int rate=8, int y=0) {
@@ -1692,8 +1704,9 @@ struct  APM {
         t[index]   += (g-t[index])   >> rate;
         t[index+1] += (g-t[index+1]) >> rate;
         const int w=pr&127;  // interpolation weight (33 points)
-        index=((pr+2048)>>7)+cxt*33;
-        return (t[index]*(128-w)+t[index+1]*w) >> 11;
+        index=((pr+2048)>>7)+(cxt & mask)*33;
+        const int out = (t[index]*(128-w)+t[index+1]*w) >> 11;
+        return out < 0 ? 0 : (out > 4095 ? 4095 : out);
     }
 
     // maps p, cxt -> p initially
@@ -1744,7 +1757,7 @@ struct DirectStateMap {
   StateMap *sm;
   U32 *cxt;
   U32 mask;
-  U8 *CxtState;
+  DemandBuffer<U8> CxtState;
   int index;
   int count;
   const U8 *nn;
@@ -1756,7 +1769,7 @@ struct DirectStateMap {
     mask=(1u<<m)-1u; index=0; count=c;
     assert(mask>=63 && ((mask+1)&mask)==0);
     alloc(cxt,(size_t)c);
-    alloc(CxtState,(size_t)mask+1);
+    CxtState.Init((size_t)mask+1);
     alloc(sm,(size_t)c);
     alloc(mmm,(size_t)c);
     for (int i=0; i<count; i++) {
@@ -1770,9 +1783,13 @@ struct DirectStateMap {
   void __attribute__ ((noinline)) set(U32 cx,int y) {
     assert(cxt[index]<=mask);
     assert(index<count);
-    CxtState[cxt[index]]=next(CxtState[cxt[index]],y);       // update state
+    const U32 prev_cx = cxt[index];
+    CxtState.EnsureElement(prev_cx);
+    CxtState[prev_cx]=next(CxtState[prev_cx],y);       // update state
     cxt[index]=cx&mask;                                     // get new context
-    const U8 state=CxtState[cxt[index]];
+    const U32 new_cx = cxt[index];
+    CxtState.EnsureElement(new_cx);
+    const U8 state=CxtState[new_cx];
     sm[index].set(state);    // predict from new context
     const int stretched_pr = stretch(sm[index].pr);
     if (index==0) pu=stretched_pr;
@@ -1790,7 +1807,7 @@ struct DirectStateMap {
       mmm[i].Free();
     }
     if (cxt) { free(cxt); cxt=nullptr; }
-    if (CxtState) { free(CxtState); CxtState=nullptr; }
+    CxtState.Release();
     if (sm) { free(sm); sm=nullptr; }
     if (mmm) { free(mmm); mmm=nullptr; }
   }
@@ -2276,6 +2293,7 @@ struct WordsContext {
     vec<U32,64*4> type;   // List of bytes surrounded by a current word, max 64*4
     vec<U32,64*4> stem;   // List of bytes surrounded by a current word, max 64*4
     vec<U8,64*4> capital; //  max 64*4
+    vec<U32,64*4> codeword;
     U32 fword,ftype;      // First word of a sentence
     U8 pbyte;             // Current byte before word
     int wordcount,upper;
@@ -2284,35 +2302,45 @@ struct WordsContext {
         vec_new(&sbytes);
         vec_new(&type);
         vec_new(&stem);
+        vec_new(&capital);
+        vec_new(&codeword);
     }
     void Reset(){
         vec_reset(&sbytes);
         vec_reset(&type);
         vec_reset(&stem);
         vec_reset(&capital);
+        vec_reset(&codeword);
         fword=pbyte=wordcount=upper=ftype=ref=0;
     }
     void Set(U8 b,int a=0){
         pbyte=b;upper=a;
     }
-    void  __attribute__ ((noinline)) Update(U32 w,U8 b, U32 t,U32 s) {
+    void  __attribute__ ((noinline)) Update(U32 w,U8 b, U32 t,U32 s, U32 cw=0) {
         if (fword==0) fword=w;
         vec_push(&sbytes,U16(pbyte*256+b));  // Surrounding bytes
         vec_push(&type,t);
         vec_push(&stem,s);
         vec_push(&capital,U8(upper));
+        vec_push(&codeword,cw);
         pbyte=0;wordcount++;
         if (ftype==0 && t) ftype=t;
     }
     void  __attribute__ ((noinline)) Remove(){
         const int num=vec_size(&stem);
         if (num) {
-            vec_pop(&sbytes),vec_pop(&type),vec_pop(&stem),vec_pop(&capital),wordcount--;
+            vec_pop(&sbytes),vec_pop(&type),vec_pop(&stem),vec_pop(&capital),vec_pop(&codeword),wordcount--;
         }
     }
     U32  __attribute__ ((noinline)) Word(int i=1){
         const int num=vec_size(&stem);
         if (num>=i) return vec_at(&stem,num-(i));
+        else return 0;
+    }
+    inline U32 Code(int i=1){
+        const int num=vec_size(&codeword);
+        if (i<=0) return 0;
+        if (num>=i) return vec_at(&codeword,num-(i));
         else return 0;
     }
     U16  __attribute__ ((noinline)) sBytes(int i=1){
@@ -3391,6 +3419,7 @@ int pr; // Our most important variable - final prediction
 StateMap1 smA[3];
 SmallStationaryContextMap scmA[7];   // 1x7 inputs fp
 Mixer1 mxA[12]; 
+Mixer1 mxA1[6]; // Tier 2 sub-mixers (0..4) and Tier 3 meta-mixer (5) 
 // Predictors are:
 // medium state memory, per context max 7 uniqe contexts state sets
 // for average sized contexts
@@ -3401,17 +3430,18 @@ ContextMap1 cmC1[8];
 // large state memory, per context max 14 uniqe contexts state sets
 // for large amount of large contexts
 ContextMap2 cmC2[18];
-APM<65536>  apmA0;
+APM<131072> apmA0;
 APM<0x8000*2>  apmA1;
 APM<0x8000*2>  apmA2;
 APM<0x20000*2>  apmA3;
-APM<0x20000*2>  apmA4;
-APM<0x20000*2>  apmA5;
+APM<131072>  apmA4;
+APM<131072>  apmA5;
 
 static inline unsigned int apm_extra() {
     unsigned int v = 0;
     v = pagectx::ApmExtra();
     v = (v << 3) | wordrec::ApmExtra();
+    v = (v << 1) | invariants::ApmExtra();
     return v;
 }
 RunContextMap rcmA[1];
@@ -3507,13 +3537,13 @@ void PredictorInit() {
     maps1.Init(16, 8);
     maps2.Init(16, 8);
 
-    // EXP-059a: 5 safely-sized DirectStateMaps (488 MiB total, 19 internal + 5 cascaded outputs = 24 inputs)
+    // EXP-069: 5 DemandBuffer-backed DirectStateMaps (0 MB startup heap commit, 976 MiB virtual capacity)
     const int dccount = 6;
-    dcsm.Init(27, dccount - 1, &STA7[0][0]);
-    dcsm0.Init(28, dccount,    &STA7[0][0]);
-    dcsm1.Init(23, 2,          &STA7[0][0]);
-    dcsm2.Init(26, 3,          &STA7[0][0]);
-    dcsmN.Init(25, 3,          &STA7[0][0]);
+    dcsm.Init(28, dccount - 1, &STA7[0][0]);
+    dcsm0.Init(29, dccount,    &STA7[0][0]);
+    dcsm1.Init(24, 2,          &STA7[0][0]);
+    dcsm2.Init(27, 3,          &STA7[0][0]);
+    dcsmN.Init(26, 3,          &STA7[0][0]);
 
     // Mixers      size,  shift, err, errmul 
     mxA[0].Init(    2048, 237,  8, 69); // general
@@ -3539,18 +3569,33 @@ void PredictorInit() {
     if (pagectx::link) pagectx::link->Reset();
     pagectx::surprise.Reset();
     wordrec::rec_bucket = 0;
+    invariants::Reset();
+    skipSeeExternal = false;
 
     // 500 baseline + 4 EXP-060 maps1/2 + 24 EXP-059a DCSM = 528 (already multiple of 16, <= 560)
     x.mxInputs1.ncount=((504 + 24) + 15) & -16; // 528
-    x.mxInputs2.ncount=(8+15)&-16;
+    x.mxInputs2.ncount=32;
+    x.mxInputs4.ncount=16;
 
     // Provide inputs array info to mixers
     for (int i=0;i<10;i++)
          mxA[i].setTxWx(x.mxInputs1.ncount,&x.mxInputs1.n[0]);
 
-    // Final mixer
+    // Final mixer (legacy fallback)
     mxA[10].setTxWx(x.mxInputs2.ncount,&x.mxInputs2.n[0]);
     mxA[11].setTxWx(x.mxInputs2.ncount,&x.mxInputs2.n[0]);
+
+    // EXP-068: Tier 2 sub-mixers and Tier 3 meta-mixer
+    mxA1[0].Init(8*7*4, 6, 0, 4);
+    mxA1[1].Init(    1, 6, 0, 4);
+    mxA1[2].Init( 2048, 6, 1, 4);
+    mxA1[3].Init( 2048, 6, 1, 4);
+    mxA1[4].Init( 2048, 6, 1, 4);
+    mxA1[5].Init( 2048, 6, 1, 4); // Conditioned on (wordrec::rec_bucket & 7u)
+
+    for (int i=0;i<5;i++)
+        mxA1[i].setTxWx(x.mxInputs2.ncount,&x.mxInputs2.n[0]);
+    mxA1[5].setTxWx(x.mxInputs4.ncount,&x.mxInputs4.n[0]);
 
     cmC2[0].Init( 8*4096*4096,3|(c_r[0]<<8)|(c_s[0]<<16),c_s3[0],&STA6[0][0],c_s4[0],0xf0,1,&st2_p1[0]);
     cmC2[1].Init(16*4096*4096,1|(c_r[1]<<8)|(c_s[1]<<16),c_s3[1],&STA6[0][0],c_s4[1],0xf0,1,&st2_p1[0]);
@@ -3958,7 +4003,7 @@ void setbufstem(char c){
         
         }
         // Sentence, all words.
-        worcxt.Update(word0,c1,(*pWord).Type,whash);
+        worcxt.Update(word0,c1,(*pWord).Type,whash,lastCW);
         // Paragraph, most words, exclude Conjunction etc.
         if (((*pWord).Type&(Conjunction+Article+Male+Female+Number+ConjunctiveAdverb))==0  && brcxt.cxt!=LESSTHAN) worcxt1.Update(word0,c1,(*pWord).Type,whash);
         // Stream, words with type, exclude Conjunction etc.
@@ -4129,6 +4174,7 @@ int modelPrediction(int c0,int bpos,int c4){
             }else {
                 // Set mixer(8) to non-codeword flag (bit 16) and last 8 bit2words
                 deccode=0x10000+(stream2b&0xffff);
+                lastCW=0;
             }
             // Set char to decoded text buffer
             if (c1==10 || c1==9 ||(c1>31 && c1<128)) {
@@ -4204,10 +4250,11 @@ int modelPrediction(int c0,int bpos,int c4){
                     U32 w=worcxt.Word(1);
                     U32 t=worcxt.Type(1);
                     U8 ca=worcxt.Capital(1);
+                    U32 co=worcxt.Code(1);
                     worcxt.Remove();
                     worcxt.Remove();
                     worcxt.Set(sb>>8,ca);
-                    worcxt.Update(w,c1,t,w);
+                    worcxt.Update(w,c1,t,w,co);
                 }
                 // Reset all bit stream mask after a word
                 stream3bRMask2=stream3bRMask1;
@@ -4219,9 +4266,10 @@ int modelPrediction(int c0,int bpos,int c4){
                 U32 w=worcxt.Word(1);
                 U32 t=worcxt.Type(1);
                 U8 ca=worcxt.Capital(1);
+                U32 co=worcxt.Code(1);
                 worcxt.Remove();
                 worcxt.Set(sb>>8,ca);
-                worcxt.Update(w,c1,t,w);
+                worcxt.Update(w,c1,t,w,co);
             }
             // Detect text, nowiki, math, pre tag boundaries, (ref tag not used)
             if (buffer1(6)==charSwap(LESSTHAN) && buffer1(5)== 't'&& isText==false && c1==SPACE  &&strcmp(so, "text")==0) isText=true,so=&sonull;
@@ -4241,6 +4289,12 @@ int modelPrediction(int c0,int bpos,int c4){
             if ((buffer1(6)=='/') && (c1==GREATERTHAN) &&(buffer1(5)=='p'  )&& strcmp(so, "page")==0) {
                 isPre=isMath=isNowiki=false;
                 if (pagectx::link) pagectx::link->NewArticle();
+                skipSeeExternal=false;
+                invariants::tail=0;
+            }
+            if (c1==LF && c2=='>' && c3=='e') {
+                skipSeeExternal=false;
+                invariants::tail=0;
             }
 
             // Update word0 pos
@@ -4423,6 +4477,21 @@ int modelPrediction(int c0,int bpos,int c4){
         if (c1==SPACE && c2==LESSTHAN) fccxt.Update(GREATERTHAN); 
         // Switch from possible category link to http link ( [word:// to [http:// )
         if (fccxt.cxt==COLON && c2=='/' && c1=='/') fccxt.Update(LF),fccxt.Update(HTLINK);
+        if (skipSeeExternal==false && colcxt.lastfc()==EQUALS) {
+            if (worcxt.wordcount==2 && c1==EQUALS) {
+                if (cwEXTERNAL && worcxt.Code(2)==cwEXTERNAL && worcxt.Code(1)==cwLINKS) {
+                    skipSeeExternal=true;
+                } else if (cwSEE && worcxt.Code(2)==cwSEE && worcxt.Code(1)==cwALSO) {
+                    skipSeeExternal=true;
+                }
+            } else if (worcxt.wordcount==1 && c1==EQUALS) {
+                if (cwREFERENCES && worcxt.Code(1)==cwREFERENCES) {
+                    skipSeeExternal=true;
+                } else if (cwBIBLIOGRAPHY && worcxt.Code(1)==cwBIBLIOGRAPHY) {
+                    skipSeeExternal=true;
+                }
+            }
+        }
         {
             pagectx::LinkState* L = pagectx::link;
             if (L) {
@@ -4436,6 +4505,7 @@ int modelPrediction(int c0,int bpos,int c4){
                 }
             }
         }
+        invariants::tail = skipSeeExternal ? 1 : 0;
         // Wiki link in the beginning of line
         if (colcxt.lastfc(0)==SQUAREOPEN && c1==SPACE && isParagraph==0) {
             if (c2==SQUARECLOSE || c3==SQUARECLOSE) {
@@ -4909,6 +4979,14 @@ int modelPrediction(int c0,int bpos,int c4){
     // was last byte a word
     mxA[10].cxt=(ordX*8 + (BrFcIdx?1:0)*4 + (stream2b&3))*2+(words&1);
 
+    // EXP-068: Sub-mixers and meta-mixer contexts
+    mxA1[0].cxt=(ordX*8 + (BrFcIdx?1:0)*4 + (stream2b&3))*2+(words&1);
+    mxA1[1].cxt=0;
+    mxA1[2].cxt=stream2b&0x3f;
+    mxA1[3].cxt=(stream2b&3)*4+wrt_2b[c0b&255];
+    mxA1[4].cxt=ordX*4+wrt_2b[c0b&255];
+    mxA1[5].cxt=(int)(wordrec::rec_bucket & 7u);
+
     // mixer 4 
     // at bpos=0   context is bit xxxxxxxx from c0, first char type state(0,1) xxxx1xxx, 2 bit2word            1111xxxx
     // at bpos=1   context is bit 1xxxxxxx from c0, first char type state(0,1) xxxx1xxx, 1 bit3word            x111xxxx, bit pos xxxxx111
@@ -5001,7 +5079,8 @@ int modelPrediction(int c0,int bpos,int c4){
         x.mxInputs1.n[x.mxInputs1.ncount++] = 0;
     }
     assert(x.mxInputs1.ncount == 528);
-    x.mxInputs2.add(mxA[0].p1());
+    int mxA0_val = mxA[0].p1();
+    x.mxInputs2.add(mxA0_val);
     x.mxInputs2.add(mxA[1].p1());
     x.mxInputs2.add(mxA[2].p1());
     x.mxInputs2.add(mxA[3].p1());
@@ -5012,7 +5091,21 @@ int modelPrediction(int c0,int bpos,int c4){
     x.mxInputs2.add(mxA[8].p1());
     x.mxInputs2.add(mxA[9].p1());
     x.mxInputs2.add(stretch(lstmpr)/2); prediction_index--;
-    return squash((mxA[10].p1()*7+mxA[11].p1()+4)>>3);
+
+    // Pad mxInputs2 to 32 inputs
+    while (x.mxInputs2.ncount < 32) x.mxInputs2.n[x.mxInputs2.ncount++] = 0;
+
+    // Populate Tier 3 inputs from Tier 1 skip and Tier 2 sub-mixers (internal: no L0 prediction overflow)
+    x.mxInputs4.add_internal(mxA0_val);
+    x.mxInputs4.add_internal(mxA1[0].p1());
+    x.mxInputs4.add_internal(mxA1[1].p1());
+    x.mxInputs4.add_internal(mxA1[2].p1());
+    x.mxInputs4.add_internal(mxA1[3].p1());
+    x.mxInputs4.add_internal(mxA1[4].p1());
+    while (x.mxInputs4.ncount < 16) x.mxInputs4.n[x.mxInputs4.ncount++] = 0;
+
+    // Return Tier 3 meta-mixer conditioned on (wordrec::rec_bucket & 7u)
+    return mxA1[5].p();
 }
 
 int rate=6;
@@ -5049,12 +5142,12 @@ void update1() {
     mxA[7].update(x.y);
     mxA[8].update(x.y);
     mxA[9].update(x.y);
-    mxA[10].update(x.y);
-    mxA[11].update(x.y);
+    for (int i = 0; i < 6; ++i) mxA1[i].update(x.y);
     //printf("mixer 0 predictor count %d\n",x.mxInputs1.ncount);
     x.mxInputs1.ncount=0;
     //printf("mixer 1 predictor count %d\n",x.mxInputs2.ncount);
     x.mxInputs2.ncount=0;
+    x.mxInputs4.ncount=0;
     // This part is from paq8hp12
     if (fails&0x00000080) --failcount;
     fails=fails*2;
@@ -5090,7 +5183,7 @@ void update1() {
     pz=apmA5.p(pu,   ((x.c0*4)^hash(min(9,pz),x5&0x80ff))&0x3ffff, rate,x.y);
     AddPrediction(pz);
     if (fails&255) pr=(pt*6+pu  +pv*11+pz*14 +31)>>5;
-    else           pr=(pt*4+pu*5+pv*12+pz*11 +31)>>5;
+    else           pr=(pt*4+pu*7+pv*12+pz*9  +31)>>5;
     AddPrediction(pr);
 }
 
