@@ -4,6 +4,8 @@
 # These files must stay intact.
 english.dic binary
 new_article_order binary
+benchmarks/data/* binary
+*.dat binary
 
 # Normalized and converts to native line endings on checkout.
 *.cpp text
