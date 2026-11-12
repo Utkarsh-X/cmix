@@ -107,7 +107,8 @@ void Predictor::AddBracket() {
 }
 
 void Predictor::AddPPMD() {
-  AddByteModel(new PPMD::PPMD(25, 2048, manager_.bit_context_, vocab_));
+  ppmd_ = new PPMD::PPMD(25, 2048, manager_.bit_context_, vocab_);
+  AddByteModel(ppmd_);
 }
 
 void Predictor::AddWord() {
@@ -420,7 +421,21 @@ float Predictor::Predict() {
     layers_[1]->SetStretchedInput(mixers_[0].size() + i, p);
   }
   float p = Sigmoid::Logistic(mixers_[1][0]->Mix());
-  p = sse_.Predict(p);
+
+  // EXP-081: Zero-RAM SSE context conditioning (Surprise x PPMd order & Dispute x Lexical)
+  int ppmd_order = ppmd_ ? ppmd_->Order() : 0;
+  int order_bin = (ppmd_order >= 12 ? 3 : (ppmd_order >= 5 ? 2 : (ppmd_order >= 2 ? 1 : 0)));
+  int surprise_bin = pagectx::surprise.s1;
+  uint8_t ctx_s1 = static_cast<uint8_t>(((order_bin & 3) << 2) | (surprise_bin & 3));
+
+  int pc = static_cast<int>(manager_.recent_bytes_[0]);
+  int lex_bin = (pc == 32 ? 0 : (pc >= 'a' && pc <= 'z' ? 1 : (pc >= 'A' && pc <= 'Z' ? 2 : 3)));
+  float aux_p = (auxiliary_.empty() ? p : layers_[0]->Inputs()[auxiliary_[0]]);
+  float delta = std::abs(p - aux_p);
+  int dispute_bin = (delta > 0.35f ? 3 : (delta > 0.15f ? 2 : (delta > 0.05f ? 1 : 0)));
+  uint8_t ctx_s2 = static_cast<uint8_t>(((lex_bin & 3) << 2) | (dispute_bin & 3));
+
+  p = sse_.Predict(p, ctx_s1, ctx_s2);
   float final_p = (byte_mixer_override >= 0) ? (float)byte_mixer_override : p;
   last_p16_ = (unsigned int)(1.0f + 65534.0f * final_p);
   if (byte_mixer_override >= 0) {

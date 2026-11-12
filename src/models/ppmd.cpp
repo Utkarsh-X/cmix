@@ -1378,4 +1378,8 @@ void PPMD::ByteUpdate() {
   probs_ /= probs_.sum();
 }
 
+int PPMD::Order() const {
+  return ppmd_model_ ? ppmd_model_->LtJ : 0;
+}
+
 } // namespace PPMD

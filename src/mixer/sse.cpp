@@ -202,7 +202,7 @@ static const int M_sm7C1 = (8202+0) * (1);
 static const int M_x2W0 = (2560+1) * (1);
 static const int M_x2wr = (8320+0) * (1);
 
-static const int M_mix1_Volume = 1* 4* (1<<8)* (1<<3)* 79;
+static const int M_mix1_Volume = 1* 4* (1<<4)* (1<<3)* 79;
 static const int M_mix2_Volume = 1* 3* (1<<1)* (1<<8)* 256;
 static const int M_sm6x_Volume = 1* 3* (1<<4)* (1<<8)* 256;
 static const int M_sm7x_Volume = 1* 3* (1<<4)* (1<<8)* 255;
@@ -240,32 +240,32 @@ struct M_T {
 
 struct M_T1 : M_T {
 
-uint M_Estimate( uint p ) {
+uint M_Estimate( uint p, uint8_t ctx_s1 = 0, uint8_t ctx_s2 = 0 ) {
   uint p0,p1,s0,s1,s2;
   uint p2,s4,s5;
   uint j=M_j, pc=M_pc, ffl=M_ffl, prq=p>>11;
 
   sm7x = 0;
   sm7x = sm7x*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  sm7x = (sm7x<<4) + ((ffl)&15);
+  sm7x = (sm7x<<4) + ((ctx_s2)&15);
   sm7x = (sm7x<<8) + ((pc)&255);
   sm7x = (sm7x*255) + M_sm7mask0[j];
 
   mix2 = 0;
   mix2 = mix2*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  mix2 = (mix2<<1) + ((ffl)&1);
+  mix2 = (mix2<<1) + ((ctx_s2)&1);
   mix2 = (mix2<<8) + ((pc)&255);
   mix2 = (mix2*256) + (j);
 
   sm6x = 0;
   sm6x = sm6x*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  sm6x = (sm6x<<4) + ((ffl)&15);
+  sm6x = (sm6x<<4) + ((ctx_s1)&15);
   sm6x = (sm6x<<8) + ((pc)&255);
   sm6x = (sm6x*256) + (j);
 
   mix1 = 0;
   mix1 = mix1*4 + ((prq>0+(1-1))+(prq>7+(1-1))+(prq>14+(1-1)));
-  mix1 = (mix1<<8) + ((ffl)&255);
+  mix1 = (mix1<<4) + ((ctx_s1)&15);
   mix1 = (mix1<<3) + (((pc)>>5)&7);
   mix1 = (mix1*79) + M_mx1mask0[j];
 
@@ -317,9 +317,9 @@ SSE::~SSE() {
   delete sse_;
 }
 
-float SSE::Predict(float input) {
+float SSE::Predict(float input, uint8_t ctx_s1, uint8_t ctx_s2) {
   int discrete = 1 + (1 - input) * 32766;
-  int estimate = sse_->M_Estimate(discrete);
+  int estimate = sse_->M_Estimate(discrete, ctx_s1, ctx_s2);
   return 1 - ((estimate - 1) / 32766.0);
 }
 

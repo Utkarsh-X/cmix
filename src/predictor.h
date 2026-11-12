@@ -9,6 +9,7 @@
 #include "models/model.h"
 #include "models/byte-model.h"
 #include "models/fast_weights.h"
+#include "models/ppmd.h"
 #include "context-manager.h"
 #include "char_rate.h"
 
@@ -55,6 +56,7 @@ class Predictor {
   Sigmoid sigmoid_;
   std::vector<std::unique_ptr<ByteMixer>> byte_mixers_;
   std::unique_ptr<FastWeightsModel> fast_weights_;
+  PPMD::PPMD* ppmd_ = nullptr;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
 };
