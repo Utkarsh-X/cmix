@@ -6,17 +6,29 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-
 def get_msvc_env():
-    cmd = f'call "{VCVARS}" && set'
-    out = subprocess.check_output(cmd, shell=True, text=True, errors="ignore")
-    env = {}
-    for line in out.splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            env[k] = v
-    return env
+    # If cl.exe is already configured in PATH (e.g. CI runner or Developer Command Prompt)
+    if shutil.which("cl"):
+        return os.environ.copy()
+
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+        r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+        r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat",
+        r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat",
+        r"C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+    ]
+    for vcvars in candidates:
+        if os.path.exists(vcvars):
+            cmd = f'call "{vcvars}" && set'
+            out = subprocess.check_output(cmd, shell=True, text=True, errors="ignore")
+            env = {}
+            for line in out.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k] = v
+            return env
+    return os.environ.copy()
 
 def compile_file(args):
     cl_exe, cpp_file, obj_file, env, flags, inc = args
