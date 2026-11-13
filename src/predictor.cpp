@@ -162,13 +162,17 @@ void Predictor::AddDirect() {
 void Predictor::AddMatch() {
   float delta = 0.5;
   int limit = 200;
-  unsigned long long max_size = 20000000;
-  std::vector<std::vector<int>> model_params = {{0, 8}, {1, 8}, {2, 8}, {7, 4},
-      {11, 3}, {13, 2}, {15, 2}, {17, 2}, {20, 1}, {25, 1}};
+  unsigned long long default_max_size = 20000000;
+  // EXP-103: High-Order Match Models ({9, 3} 4M cap, {10, 2} 1M cap, {12, 2} 4M cap)
+  std::vector<std::vector<unsigned long long>> model_params = {
+      {0, 8}, {1, 8}, {2, 8}, {7, 4},
+      {9, 3, 4000000}, {10, 2, 1000000}, {11, 3}, {12, 2, 4000000},
+      {13, 2}, {15, 2}, {17, 2}, {20, 1}, {25, 1}};
 
   for (const auto& params : model_params) {
     const Context& context = manager_.AddContext(std::unique_ptr<Context>(
-        new ContextHash(manager_.bit_context_,params[0], params[1])));
+        new ContextHash(manager_.bit_context_, params[0], params[1])));
+    unsigned long long max_size = (params.size() > 2) ? params[2] : default_max_size;
     AddModel(new Match(manager_.history_, context.GetContext(),
         manager_.bit_context_, limit, delta, std::min(max_size, context.Size()),
         &(manager_.longest_match_)));
@@ -227,9 +231,10 @@ void Predictor::AddMixers() {
 
   unsigned long long input_size = GetNumModels();
   layers_[0]->SetNumModels(input_size);
+  // EXP-103: Extended Layer-0 ContextHash Mixers with High-Order Conditioning ({8, 1}, {12, 1})
   std::vector<std::vector<double>> model_params = {{0, 8, 0.005},
       {0, 8, 0.0005}, {1, 8, 0.005}, {1, 8, 0.0005}, {2, 4, 0.005},
-      {3, 2, 0.002}};
+      {3, 2, 0.002}, {8, 1, 0.001}, {12, 1, 0.0005}};
   for (const auto& params : model_params) {
     const Context& context = manager_.AddContext(std::unique_ptr<Context>(
         new ContextHash(manager_.bit_context_, params[0], params[1])));
