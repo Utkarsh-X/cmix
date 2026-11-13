@@ -268,19 +268,31 @@ float Mixer::ComputeUpdate(int bit) {
 
   float err = e2e_use_ ? e2e_err_ : (Sigmoid::Logistic(p_) - bit);
   e2e_use_ = false;
-  float update = decay * learning_rate_ * err;
+
+  // Study 18: Confidence-Gated Deadband Updates (epsilon = 0.010)
+  // When model is already >99% confident, freeze gradient push to prevent weight saturation.
+  float abs_err = (err >= 0.0f) ? err : -err;
+  float update = (abs_err > 0.010f) ? (decay * learning_rate_ * err) : 0.0f;
+
   ++steps_;
   ++data->steps;
   if (data->steps > max_steps_) {
     max_steps_ = data->steps;
   }
 
+  // Study 18: Passive L2 Weight Shrinkage (lambda = 3.0e-5)
+  // Regulates weight norm over long sequences (1MB), preserving model plasticity.
+  constexpr float lambda = 3.0e-5f;
+  float shrinkage = 1.0f - lambda * decay;
+
   int ne = extra_inputs_.size();
   if (ne > 0) {
 #ifdef __AVX2__
-    AvxWeightUpdate(&data->extra_weights[0], &extra_inputs_[0], update, ne);
+    if (shrinkage < 1.0f) AvxScale(&data->extra_weights[0], shrinkage, ne);
+    if (update != 0.0f) AvxWeightUpdate(&data->extra_weights[0], &extra_inputs_[0], update, ne);
 #else
-    data->extra_weights -= update * extra_inputs_;
+    if (shrinkage < 1.0f) data->extra_weights *= shrinkage;
+    if (update != 0.0f) data->extra_weights -= update * extra_inputs_;
 #endif
   }
   return update;
@@ -291,10 +303,16 @@ void Mixer::Perceive(int bit) {
   ContextData* data = current_data_;
   current_data_ = nullptr;
 
+  float decay = 0.9 / pow(0.0000001 * steps_ + 0.8, 0.8);
+  constexpr float lambda = 3.0e-5f;
+  float shrinkage = 1.0f - lambda * decay;
+
 #ifdef __AVX2__
   int n = inputs_.size();
-  AvxWeightUpdate(&data->weights[0], &inputs_[0], update, n);
+  if (shrinkage < 1.0f) AvxScale(&data->weights[0], shrinkage, n);
+  if (update != 0.0f) AvxWeightUpdate(&data->weights[0], &inputs_[0], update, n);
 #else
-  data->weights -= update * inputs_;
+  if (shrinkage < 1.0f) data->weights *= shrinkage;
+  if (update != 0.0f) data->weights -= update * inputs_;
 #endif
 }
