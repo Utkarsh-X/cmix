@@ -250,8 +250,11 @@ void Mixer::E2ESeedHead(unsigned int head, float val) {
 float Mixer::ComputeUpdate(int bit) {
   ContextData* data = current_data_ ? current_data_ : GetContextData();
   current_data_ = data;
-  float decay = 0.9 / pow(0.0000001 * steps_ + 0.8, 0.8);
-  decay *= 1.5 - ((1.0 * data->steps) / max_steps_);
+
+  if ((steps_ & 63) == 0) {
+    cached_decay_base_ = 0.9f / std::pow(0.0000001f * steps_ + 0.8f, 0.8f);
+  }
+  float decay = cached_decay_base_ * (1.5f - ((1.0f * data->steps) / max_steps_));
 
   // Per-Row Learning rate adaptation (PRL)
   float row_decay = 0.10f;  // Ex-Girlfriend mixdecay::kFinal = 0.100
@@ -268,7 +271,27 @@ float Mixer::ComputeUpdate(int bit) {
 
   float err = e2e_use_ ? e2e_err_ : (Sigmoid::Logistic(p_) - bit);
   e2e_use_ = false;
-  float update = decay * learning_rate_ * err;
+
+  // Sustained Regime Detector (FastSRD-SGD):
+  // Tracks dual-window moving variance to detect domain transitions
+  float err2 = err * err;
+  constexpr float alpha_fast = 0.015f;
+  constexpr float alpha_slow = 0.0005f;
+  fast_err2_ += alpha_fast * (err2 - fast_err2_);
+  slow_err2_ += alpha_slow * (err2 - slow_err2_);
+
+  float ratio = fast_err2_ / (slow_err2_ + 1e-4f);
+  float boost = 1.0f;
+  if (steps_ > 262144) {
+    if (ratio > 1.20f) {
+      boost = 1.0f + 1.2f * (ratio - 1.20f);
+      if (boost > 2.5f) boost = 2.5f;
+    } else if (ratio < 0.80f) {
+      boost = 0.85f;
+    }
+  }
+
+  float update = (decay * boost) * learning_rate_ * err;
   ++steps_;
   ++data->steps;
   if (data->steps > max_steps_) {

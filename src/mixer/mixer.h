@@ -53,6 +53,9 @@ class Mixer {
   float e2e_err_ = 0.0f;
   bool e2e_use_ = false;
   ContextData* current_data_ = nullptr;
+  float cached_decay_base_ = 1.0758f;
+  float fast_err2_ = 0.25f;
+  float slow_err2_ = 0.25f;
 };
 
 #endif
