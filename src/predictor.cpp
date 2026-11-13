@@ -287,16 +287,16 @@ void Predictor::AddMixers() {
   AddMixer(0, manager_.wrt_context_, 0.002);
   AddMixer(0, manager_.auxiliary_context_, 0.0005);
   if (template_context_) {
-    AddMixer(0, template_context_->GetContext(), 0.001);
+    AddMixer(0, template_context_->GetContext(), 0.006);
   }
   if (table_context_) {
-    AddMixer(0, table_context_->GetContext(), 0.001);
+    AddMixer(0, table_context_->GetContext(), 0.006);
   }
   if (citation_context_) {
-    AddMixer(0, citation_context_->GetContext(), 0.001);
+    AddMixer(0, citation_context_->GetContext(), 0.004);
   }
   if (morph_context_) {
-    AddMixer(0, morph_context_->GetContext(), 0.001);
+    AddMixer(0, morph_context_->GetContext(), 0.003);
   }
 
   std::vector<int> map(256, 0);
