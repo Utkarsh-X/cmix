@@ -51,7 +51,8 @@ void Match::Perceive(int bit) {
   if (bit_context_ >= 128) {
     uint32_t slot = div_map_.Mod(byte_context_);
     map_[slot] = history_pos_;
-    tags_[slot] = (unsigned short)(((byte_context_ >> 32) ^ (byte_context_ >> 16)) | 1);
+    hist_tag_ = (unsigned short)((hist_tag_ * 33) ^ bit_context_) | 1;
+    tags_[slot] = hist_tag_;
     ++history_pos_;
   }
 }
@@ -59,7 +60,7 @@ void Match::Perceive(int bit) {
 void Match::ByteUpdate() {
   if (match_length_ < 8) {
     uint32_t slot = div_map_.Mod(byte_context_);
-    unsigned short tag = (unsigned short)(((byte_context_ >> 32) ^ (byte_context_ >> 16)) | 1);
+    unsigned short tag = hist_tag_;
     if (tags_[slot] == tag) {
       cur_match_ = map_[slot];
     } else {
