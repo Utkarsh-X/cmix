@@ -35,6 +35,7 @@ def run_tier(name, input_file, exp_id, cmix_bin, dict_file, scratch_dir):
     expected_hash = GOLDEN_HASHES.get(filename)
     record_size = RECORDS.get(filename, 0)
     
+    os.makedirs(scratch_dir, exist_ok=True)
     comp_file = os.path.join(scratch_dir, f"{filename}_{exp_id}.cmix")
     decomp_file = os.path.join(scratch_dir, f"{filename}_{exp_id}_decomp.dat")
     temp_file = comp_file + ".cmix.temp"
