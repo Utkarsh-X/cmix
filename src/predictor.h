@@ -42,6 +42,9 @@ class Predictor {
   void AddMatch();
   void AddGrammarMatch();
   void AddTemplate();
+  void AddTable();
+  void AddCitation();
+  void AddMorph();
   void AddDoubleIndirect();
   void AddMixers();
   void E2EGrad(int bit);
@@ -59,6 +62,9 @@ class Predictor {
   std::unique_ptr<FastWeightsModel> fast_weights_;
   PPMD::PPMD* ppmd_ = nullptr;
   const Context* template_context_ = nullptr;
+  const Context* table_context_ = nullptr;
+  const Context* citation_context_ = nullptr;
+  const Context* morph_context_ = nullptr;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
 };
