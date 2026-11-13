@@ -4552,7 +4552,7 @@ int modelPrediction(int c0,int bpos,int c4){
                 fccxt.Update(fc); //
             }
         }
-        if ((fc!=FIRSTUPPER) && ((c4&0xffffff)==0x4a2f2f)) {//http link - fixme
+        if ((fc!=FIRSTUPPER) && ((c4&0xffffff)==0x3a2f2f)) {//http link ("://")
             fc=HTLINK;
         }
         // Parse sentances.
