@@ -11,6 +11,30 @@ typedef unsigned short word;
 typedef unsigned int uint;
 typedef unsigned char byte;
 
+enum {
+  SCALElog = 15,
+  SCALE = 1<<SCALElog,
+  hSCALE = SCALE/2,
+  mSCALE = SCALE-1
+};
+
+word t_compand[SCALE];
+
+uint Init_Compand(void) {
+  static const int knot_val[7] = { 0, 1820, 7282, 16384, 25486, 30948, 32768 };
+  for (int ip = 0; ip < SCALE; ip++) {
+    int idx = 0;
+    while (idx < 5 && ip >= knot_val[idx+1]) idx++;
+    int span = knot_val[idx+1] - knot_val[idx];
+    double frac = span > 0 ? (ip - knot_val[idx]) / (double)span : 0.0;
+    double u = (idx + frac) / 6.0;
+    t_compand[ip] = (word)(u * mSCALE + 0.5);
+  }
+  return 0;
+}
+
+uint unused_compand = Init_Compand();
+
 struct SSEi_updstr {
   int P;
   int sw;
@@ -27,18 +51,21 @@ struct SSEi {
   word P[SSEQuant];
 
   void Init( int Wi=0 ) {
-    int i,p1;
-
-    int SCw = (SCALE-Wi)/(SSEQuant-1);
-    int INC = Wi/2 + 8192;
-    for( i=0,p1=INC; i<SSEQuant; i++,p1+=SCw ) P[i] = p1 ;
+    static const double p_norm[7] = { 0.0, 2.0/36.0, 8.0/36.0, 0.5, 1.0 - 8.0/36.0, 1.0 - 2.0/36.0, 1.0 };
+    int span = SCALE - Wi;
+    for (int i = 0; i < SSEQuant; i++) {
+      int p_i = Wi / 2 + (int)(p_norm[i] * span + 0.5);
+      P[i] = p_i + 8192;
+    }
   }
 
   int SSE_Pred( int iP, SSEi_updstr& X ) {
 
-    int sseFreq = ((SSEQuant-1)*iP)>>SCALElog;
+    int u = (iP >= 0 && iP < SCALE) ? t_compand[iP] : (iP >= SCALE ? mSCALE : 0);
+    int sseFreq = ((SSEQuant-1)*u)>>SCALElog;
+    if (sseFreq > SSEQuant - 2) sseFreq = SSEQuant - 2;
 
-    X.sw = ((SSEQuant-1)*iP)&mSCALE;
+    X.sw = ((SSEQuant-1)*u)&mSCALE;
     X.C1 = &P[sseFreq+0];
     int f = (((SCALE-X.sw)*X.C1[0]+X.sw*X.C1[1])>>SCALElog) - 8192;
 
@@ -61,14 +88,6 @@ struct SSEi {
     X.C1[1] = X.P - (dC-sw_dC) +8192;
   }
 
-};
-
-
-enum {
-  SCALElog = 15,
-  SCALE = 1<<SCALElog,
-  hSCALE = SCALE/2,
-  mSCALE = SCALE-1
 };
 
 #ifndef M_LOG2E
