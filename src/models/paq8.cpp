@@ -824,7 +824,7 @@ static inline U64 hash(const U64 x0, const U64 x1, const U64 x2, const U64 x3, c
          (x6+1)*MUL64_6 + (x7+1)*MUL64_7;
 }
 static inline U64 combine64(const U64 seed, const U64 x) {
-  return hash(seed+x);
+  return (seed * UINT64_C(0x9E3779B97F4A7C15) ^ (x + 1)) * UINT64_C(0x993DDEFFB1462949);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -4026,9 +4026,10 @@ void wordModel(Mixer& m) {
             else if (c=='.' || c=='!' || c=='?' || c==',' || c==';' || c==':') spafdo=0,ccword=c,mask2+=3;
             else { ++spafdo; spafdo=min(63,spafdo); }
         }
-        if ((c4&0xFFFF)==0x3D3D && frstchar==0x3d) xword1=word1;//,xword2=word2; // == wiki
-            if ((c4&0xFFFF)==0x2727) xword2=word1;//,xword2=word2; // '' wiki
-        //if ((c4&0xFFFF)==0x7D7D) xword3=word1;       //}} wiki
+        if ((c4&0xFFFF)==0x3D3D && frstchar==0x3d) xword1=word1;// == wiki
+        if ((c4&0xFFFF)==0x2727) xword2=word1;// '' wiki
+        if ((c4&0xFFFF)==0x7D7D) xword1=word1;// }} wiki template close
+        if ((c4&0xFFFF)==0x5D5D) xword0=word1;// ]] wiki link close
         lastDigit=min(0xFF,lastDigit+1);
         if (c>='0' && c<='9') {
             if (buf(3)>='0' && buf(3)<='9' && (buf(2)=='.')&& number0==0) {number0=number1; number1=0;} // 0.4645
@@ -4162,7 +4163,7 @@ void nestModel(Mixer& m)
 {
   static int ic=0, bc=0, pc=0, qc=0, lvc=0, ac=0, ec=0, uc=0, sense1=0, sense2=0, w=0;
   static unsigned int vc=0, wc=0;
-  static ContextMap cm(MEM()/2, 12);
+  static ContextMap cm(MEM()*2, 12);
 
   if (bpos==0) {
     int c=c4&255, matched=1, vv;
@@ -8153,7 +8154,7 @@ void XMLModel(Mixer& m, ModelStats *Stats = nullptr){
 U32 last_prediction = 2048;
 
 int contextModel2(ModelStats *Stats) {
-  static ContextMap2 cm(MEM()*16, 10);
+  static ContextMap2 cm(MEM()*8, 10);
   static TextModel textModel(MEM()*16);
   static MatchModel matchModel(MEM()*2);
   static SparseMatchModel sparseMatchModel(MEM()/2);
