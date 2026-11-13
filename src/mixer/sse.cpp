@@ -21,7 +21,9 @@ enum {
 word t_compand[SCALE];
 
 uint Init_Compand(void) {
-  static const int knot_val[7] = { 0, 1820, 7282, 16384, 25486, 30948, 32768 };
+  // Study 16: Fisher-optimal Cubic Power-Law Knot Geometry (gamma = 3.0)
+  // Replaces legacy quadratic spacing, reducing quantization distortion on extreme tails.
+  static const int knot_val[7] = { 0, 607, 4855, 16384, 27913, 32161, 32768 };
   for (int ip = 0; ip < SCALE; ip++) {
     int idx = 0;
     while (idx < 5 && ip >= knot_val[idx+1]) idx++;
@@ -208,18 +210,18 @@ static const int M_f0C = (10240+0) * (1);
 static const int M_f1C = (7935+0) * (1);
 static const int M_f2C = (9592+0) * (1);
 static const int M_sm6wrA = (0+0) * (1);
-static const int M_sm6wrB = (106+0) * (1);
+static const int M_sm6wrB = (160+0) * (1);
 static const int M_sm6mw = (0+0) * (1);
 static const int M_sm6C1 = (8092+0) * (1);
 static const int M_x1W0 = (7648+1) * (1);
-static const int M_x1wr = (6202+0) * (1);
+static const int M_x1wr = (8000+0) * (1);
 static const int M_f3C = (8200+0) * (1);
 static const int M_f4C = (7677+0) * (1);
-static const int M_sm7wrB = (127+0) * (1);
+static const int M_sm7wrB = (200+0) * (1);
 static const int M_sm7mw = (8192+0) * (1);
 static const int M_sm7C1 = (8202+0) * (1);
 static const int M_x2W0 = (2560+1) * (1);
-static const int M_x2wr = (8320+0) * (1);
+static const int M_x2wr = (10500+0) * (1);
 
 static const int M_mix1_Volume = 1* 4* (1<<4)* (1<<3)* 79;
 static const int M_mix2_Volume = 1* 3* (1<<1)* (1<<8)* 256;
