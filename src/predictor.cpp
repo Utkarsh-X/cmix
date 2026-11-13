@@ -22,6 +22,7 @@
 #include "contexts/table-context.h"
 #include "contexts/citation-context.h"
 #include "contexts/morph-context.h"
+#include "contexts/namespace-context.h"
 
 #include <vector>
 #include <stdlib.h>
@@ -44,6 +45,7 @@ Predictor::Predictor(const std::vector<bool>& vocab) : manager_(),
   AddTable();
   AddCitation();
   AddMorph();
+  AddNamespace();
   AddDoubleIndirect();
   AddMixers();
 }
@@ -225,6 +227,15 @@ void Predictor::AddMorph() {
       manager_.bit_context_, 250, manager_.shared_map_));
 }
 
+void Predictor::AddNamespace() {
+  namespace_context_ = &manager_.AddContext(std::unique_ptr<Context>(
+      new NamespaceContext(manager_.bit_context_)));
+  AddModel(new Direct(namespace_context_->GetContext(), manager_.bit_context_,
+      30, 0, namespace_context_->Size()));
+  AddModel(new Indirect(manager_.nonstationary_, namespace_context_->GetContext(),
+      manager_.bit_context_, 300, manager_.shared_map_));
+}
+
 void Predictor::AddDoubleIndirect() {
   float delta = 400;
   std::vector<std::vector<unsigned int>> model_params = {{1, 8, 1, 8},
@@ -297,6 +308,9 @@ void Predictor::AddMixers() {
   }
   if (morph_context_) {
     AddMixer(0, morph_context_->GetContext(), 0.003);
+  }
+  if (namespace_context_) {
+    AddMixer(0, namespace_context_->GetContext(), 0.004);
   }
 
   std::vector<int> map(256, 0);

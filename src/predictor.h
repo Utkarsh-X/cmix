@@ -45,6 +45,7 @@ class Predictor {
   void AddTable();
   void AddCitation();
   void AddMorph();
+  void AddNamespace();
   void AddDoubleIndirect();
   void AddMixers();
   void E2EGrad(int bit);
@@ -65,6 +66,7 @@ class Predictor {
   const Context* table_context_ = nullptr;
   const Context* citation_context_ = nullptr;
   const Context* morph_context_ = nullptr;
+  const Context* namespace_context_ = nullptr;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
 };
