@@ -7,7 +7,7 @@ Match::Match(const std::vector<unsigned char>& history,
     byte_context_(byte_context), bit_context_(bit_context), history_pos_(0),
     cur_match_(0), cur_byte_(0), bit_pos_(128), match_length_(0),
     longest_match_(longest_match), limit_(limit),delta_(delta),
-    divisor_(1.0 / (limit + delta)), map_(map_size, 0) {
+    divisor_(1.0 / (limit + delta)), map_(map_size, 0), tags_(map_size, 0) {
   div_map_.Init(map_.size());
   div_hist_.Init(history_.size());
   for (int i = 0; i < 256; ++i) {
@@ -41,6 +41,7 @@ void Match::Perceive(int bit) {
       if (match_length_ < 255) ++match_length_;
     } else {
       match_length_ = 0;
+      cur_match_ = 0;
     }
   } else {
     match_length_ = 0;
@@ -48,14 +49,22 @@ void Match::Perceive(int bit) {
   bit_pos_ /= 2;
 
   if (bit_context_ >= 128) {
-    map_[div_map_.Mod(byte_context_)] = history_pos_;
+    uint32_t slot = div_map_.Mod(byte_context_);
+    map_[slot] = history_pos_;
+    tags_[slot] = (unsigned short)(((byte_context_ >> 32) ^ (byte_context_ >> 16)) | 1);
     ++history_pos_;
   }
 }
 
 void Match::ByteUpdate() {
   if (match_length_ < 8) {
-    cur_match_ = map_[div_map_.Mod(byte_context_)];
+    uint32_t slot = div_map_.Mod(byte_context_);
+    unsigned short tag = (unsigned short)(((byte_context_ >> 32) ^ (byte_context_ >> 16)) | 1);
+    if (tags_[slot] == tag) {
+      cur_match_ = map_[slot];
+    } else {
+      cur_match_ = 0;
+    }
   } else {
     ++cur_match_;
   }

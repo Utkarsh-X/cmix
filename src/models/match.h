@@ -27,6 +27,7 @@ class Match : public Model {
   int limit_;
   float delta_, divisor_;
   std::vector<unsigned int> map_;
+  std::vector<unsigned short> tags_;
   fastdiv::Div64 div_map_, div_hist_;
   std::array<float, 256> predictions_;
   std::array<int, 256> counts_;
