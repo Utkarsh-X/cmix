@@ -56,6 +56,9 @@ unsigned long long Predictor::GetNumModels() {
   if (fast_weights_) {
     num += fast_weights_->NumOutputs();
   }
+  if (linear_attention_) {
+    num += linear_attention_->NumOutputs();
+  }
   return num;
 }
 
@@ -221,6 +224,10 @@ void Predictor::AddMixers() {
 
   // EXP-091: Dual-Layer Fast-Weights Associative Memory (LSTM L0 + L1 = 400 dims)
   fast_weights_.reset(new FastWeightsModel(vocab_, 400));
+  AddAuxiliary();
+
+  // EXP-109: Zero-Weight Online Streaming Attention (Delta-Rule, D=64, 400d LSTM features)
+  linear_attention_.reset(new OnlineLinearAttentionModel(vocab_, 400));
   AddAuxiliary();
 
   for (int i = 0; i < 2; ++i) {
@@ -406,6 +413,13 @@ float Predictor::Predict() {
       ++input_index;
     }
   }
+  if (linear_attention_) {
+    const std::valarray<float>& outputs = linear_attention_->Predict();
+    for (unsigned int j = 0; j < outputs.size(); ++j) {
+      layers_[0]->SetInput(input_index, outputs[j]);
+      ++input_index;
+    }
+  }
   float auxiliary_average = 0;
   for (unsigned int i = 0; i < auxiliary_.size(); ++i) {
     auxiliary_average += Sigmoid::Logistic(layers_[0]->Inputs()[auxiliary_[i]]);
@@ -479,6 +493,9 @@ void Predictor::Perceive(int bit) {
   if (fast_weights_) {
     fast_weights_->Perceive(bit);
   }
+  if (linear_attention_) {
+    linear_attention_->Perceive(bit);
+  }
   E2EGrad(bit);
   const unsigned int n0 = (unsigned int)mixers_[0].size();
   if (n0 > 0 && n0 <= 64) {
@@ -531,6 +548,9 @@ void Predictor::Perceive(int bit) {
       const auto& h = byte_mixers_[0]->Hidden();
       const float* h_ptr = &h[0];
       fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], h_ptr);
+      if (linear_attention_) {
+        linear_attention_->UpdateByte((uint8_t)manager_.recent_bytes_[0], h_ptr);
+      }
     }
   }
   for (const auto& byte_mixer : byte_mixers_) {
