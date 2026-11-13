@@ -9,7 +9,7 @@ GOLDEN_HASHES = {
 RECORDS = {
     "test_15k.dat": 2973,      # EXP-102 World Record (-7 B Win)
     "enwik8_100kb": 19310,     # EXP-102 World Record (-16 B Win)
-    "enwik8_1mb":   171404,    # EXP-102 World Record (-98 B Win)
+    "enwik8_1mb":   171397,    # EXP-103 World Record (-7 B Win)
 }
 
 def run_pass(cmix_bin, dict_file, mode_flag, in_file, out_file, is_decomp=False):
@@ -35,6 +35,7 @@ def run_tier(name, input_file, exp_id, cmix_bin, dict_file, scratch_dir):
     expected_hash = GOLDEN_HASHES.get(filename)
     record_size = RECORDS.get(filename, 0)
     
+    os.makedirs(scratch_dir, exist_ok=True)
     comp_file = os.path.join(scratch_dir, f"{filename}_{exp_id}.cmix")
     decomp_file = os.path.join(scratch_dir, f"{filename}_{exp_id}_decomp.dat")
     temp_file = comp_file + ".cmix.temp"
