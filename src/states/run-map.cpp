@@ -15,8 +15,10 @@ RunMap::RunMap() {
 }
 
 float RunMap::InitProbability(int state) const {
-  if (state < 128) return (128.0 - state) / 256;
-  return state / 256.0;
+  static const float kInitProb[256] = {
+#include "run_map_table.inc"
+  };
+  return kInitProb[state & 0xFF];
 }
 
 int RunMap::Next(int state, int bit) const {
