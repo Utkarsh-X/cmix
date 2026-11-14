@@ -6,6 +6,7 @@ static inline unsigned int BracketType(unsigned char c) {
     case '{': return 1;
     case '[': return 2;
     case '<': return 3;
+    case '"': return 4;
     default:  return 0;
   }
 }
@@ -13,23 +14,25 @@ static inline unsigned int BracketType(unsigned char c) {
 BracketContext::BracketContext(const unsigned int& bit_context,
     int distance_limit, int stack_limit) : byte_(bit_context),
     distance_limit_(distance_limit), stack_limit_(stack_limit) {
-  brackets_ = {{'(',')'}, {'{','}'}, {'[',']'}, {'<','>'}};
+  brackets_ = {{'(',')'}, {'{','}'}, {'[',']'}, {'<','>'}, {'"','"'}};
   context_ = 0;
-  // Dense context space: 1 (empty) + 4 (bracket types) * 2 (single vs nested) * distance_limit_
-  size_ = 1 + 8 * distance_limit_;
+  // Dense context space: 1 (empty) + 5 (bracket types) * 2 (single vs nested) * distance_limit_
+  size_ = 1 + 10 * distance_limit_;
 }
 
 void BracketContext::Update() {
+  bool closed = false;
   if (!active_.empty()) {
-    if (brackets_[active_[active_.size() - 1]] == byte_ ||
-        distance_[distance_.size() - 1] >= distance_limit_ - 1) {
+    if (brackets_[active_.back()] == byte_ ||
+        distance_.back() >= distance_limit_ - 1) {
       active_.pop_back();
       distance_.pop_back();
+      closed = true;
     } else {
-      ++distance_[distance_.size() - 1];
+      ++distance_.back();
     }
   }
-  if (brackets_.find(byte_) != brackets_.end()) {
+  if (!closed && brackets_.find(byte_) != brackets_.end()) {
     active_.push_back(byte_);
     distance_.push_back(0);
     // Fix unbounded stack bug: check active_.size() instead of brackets_.size()
@@ -45,7 +48,7 @@ void BracketContext::Update() {
     if (dist >= static_cast<unsigned int>(distance_limit_)) {
       dist = static_cast<unsigned int>(distance_limit_ - 1);
     }
-    context_ = 1 + (d * 4 + b) * distance_limit_ + dist;
+    context_ = 1 + (d * 5 + b) * distance_limit_ + dist;
   } else {
     context_ = 0;
   }
