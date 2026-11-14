@@ -122,7 +122,8 @@ void FastWeightsEngine::Update(uint8_t target_byte) {
   float hsh = 0.0f;
   for (int j = 0; j < D; ++j) {
     float denom = std::sqrt(v_[j]) + 0.001f * msd + 1e-12f;
-    float s = msd / denom;
+    // Clamped preconditioning: suppresses transient spikes across syntax transitions
+    float s = std::clamp(msd / denom, 0.25f, 4.0f);
     sh[j] = s * h_prev_[j];
     hsh += h_prev_[j] * sh[j];
   }
@@ -131,7 +132,8 @@ void FastWeightsEngine::Update(uint8_t target_byte) {
   // kappa_t = kappa_f + (kappa_0 - kappa_f) / (1 + t / tau)
   constexpr float kappa_0 = 0.006f;
   constexpr float kappa_f = 0.0015f;
-  constexpr float tau = 8000.0f;
+  // Scale-invariant annealing horizon (matches EXP-137 SSE rational decay half-life)
+  constexpr float tau = 65536.0f;
   float kappa_t = kappa_f + (kappa_0 - kappa_f) / (1.0f + (float)step_t_ / tau);
   float eta = kappa_t / (1.0f + hsh);
   step_t_++;
@@ -143,8 +145,8 @@ void FastWeightsEngine::Update(uint8_t target_byte) {
     if (p <= 0.0f) continue;
 
     float d = p - (i == y ? 1.0f : 0.0f);
-    float c = std::tanh(logits_[i] * (1.0f / 15.0f));
-    float dl = d * (1.0f - c * c);
+    // Straight-Through Estimator (STE): restores canonical softmax-cross-entropy link cancellation
+    float dl = d;
     float g = eta * dl;
 
     // Bias update
