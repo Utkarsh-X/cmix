@@ -4028,7 +4028,8 @@ void wordModel(Mixer& m) {
         }
         if ((c4&0xFFFF)==0x3D3D && frstchar==0x3d) xword1=word1;//,xword2=word2; // == wiki
             if ((c4&0xFFFF)==0x2727) xword2=word1;//,xword2=word2; // '' wiki
-        //if ((c4&0xFFFF)==0x7D7D) xword3=word1;       //}} wiki
+        if ((c4&0xFFFF)==0x7D7D) xword1=word1;       // }} wiki template close
+        if ((c4&0xFFFF)==0x5D5D) xword0=word1;       // ]] wiki link close
         lastDigit=min(0xFF,lastDigit+1);
         if (c>='0' && c<='9') {
             if (buf(3)>='0' && buf(3)<='9' && (buf(2)=='.')&& number0==0) {number0=number1; number1=0;} // 0.4645
@@ -4194,7 +4195,7 @@ void nestModel(Mixer& m)
       case '|': pc += 223; break;
       case '"': pc += 0x40; break;
       case '\'': pc += 0x42; if (c!=(U8)(c4>>8)) sense2^=1; else ac+=(2*sense2-1); break;
-      case '\n': pc = qc = 0; break;
+      case '\n': pc = qc = 0; if ((c4&0xFFFF)==0x0A0A) { ic >>= 1; uc >>= 1; } break;
       case '.': pc = 0; break;
       case '!': pc = 0; break;
       case '?': pc = 0; break;
@@ -8196,6 +8197,7 @@ int contextModel2(ModelStats *Stats) {
     cm.set(cxt[15]);
     for (int i=14; i>0; --i)
       cxt[i]=combine64(cxt[i-1],B);
+    cxt[0]=B;
     for (int i=0; i<7; ++i)
       cm.set(cxt[i]);
     rcm7.set(cxt[7]);
