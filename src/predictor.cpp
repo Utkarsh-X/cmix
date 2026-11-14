@@ -172,8 +172,11 @@ void Predictor::AddMatch() {
   int limit = 200;
   unsigned long long default_max_size = 20000000;
   // EXP-103: High-Order Match Models ({9, 3} 4M cap, {10, 2} 1M cap, {12, 2} 4M cap)
+  // EXP-130: Mid-Order Match Models ({3, 6} 256K, {4, 5} 1M, {5, 4} 1M) for English word length matches
   std::vector<std::vector<unsigned long long>> model_params = {
-      {0, 8}, {1, 8}, {2, 8}, {7, 4},
+      {0, 8}, {1, 8}, {2, 8},
+      {3, 6, 262144}, {4, 5, 1048576}, {5, 4, 1048576},
+      {7, 4},
       {9, 3, 4000000}, {10, 2, 1000000}, {11, 3}, {12, 2, 4000000},
       {13, 2}, {15, 2}, {17, 2}, {20, 1}, {25, 1}};
 
