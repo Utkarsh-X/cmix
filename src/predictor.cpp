@@ -543,13 +543,15 @@ void Predictor::Perceive(int bit) {
   if (n0 > 0 && n0 <= 64) {
     const std::valarray<float>& in0 = layers_[0]->Inputs();
     float updates[64];
+    float shrinks[64];
     float* wptrs[64];
     for (unsigned int i = 0; i < n0; ++i) {
       updates[i] = mixers_[0][i]->ComputeUpdate(bit);
+      shrinks[i] = mixers_[0][i]->CurrentShrink();
       wptrs[i] = mixers_[0][i]->CurrentWeights();
       mixers_[0][i]->ClearCurrent();
     }
-    Mixer::BatchTrain(&in0[0], wptrs, (int)n0, (int)in0.size(), updates);
+    Mixer::BatchTrain(&in0[0], wptrs, (int)n0, (int)in0.size(), updates, shrinks);
     for (unsigned int i = 1; i < mixers_.size(); ++i) {
       for (const auto& mixer : mixers_[i]) {
         mixer->Perceive(bit);

@@ -85,23 +85,43 @@ inline void DotRowsExact(const float* __restrict x, float* const* __restrict w,
   }
 }
 
+inline void AvxWeightUpdateWithShrink(float* weights, const float* inputs, float update, float shrink, int n) {
+  __m256 vshrink = _mm256_set1_ps(shrink);
+  __m256 vupdate = _mm256_set1_ps(update);
+  int i = 0;
+  for (; i + 7 < n; i += 8) {
+    __m256 vw = _mm256_loadu_ps(weights + i);
+    __m256 vi = _mm256_loadu_ps(inputs + i);
+    vw = _mm256_mul_ps(vw, vshrink);
+    vw = _mm256_fnmadd_ps(vupdate, vi, vw);
+    _mm256_storeu_ps(weights + i, vw);
+  }
+  for (; i < n; ++i) {
+    weights[i] = weights[i] * shrink - update * inputs[i];
+  }
+}
+
 template <int R>
 inline void TrainRowsExact(const float* __restrict x, float* const* __restrict w,
-    int n, const float* __restrict u) {
-  __m256 uv[R];
-  for (int r = 0; r < R; ++r) uv[r] = _mm256_set1_ps(u[r]);
+    int n, const float* __restrict u, const float* __restrict s) {
+  __m256 uv[R], sv[R];
+  for (int r = 0; r < R; ++r) {
+    uv[r] = _mm256_set1_ps(u[r]);
+    sv[r] = _mm256_set1_ps(s[r]);
+  }
   int i = 0;
   for (; i + 7 < n; i += 8) {
     const __m256 xv = _mm256_loadu_ps(x + i);
     for (int r = 0; r < R; ++r) {
       __m256 vw = _mm256_loadu_ps(w[r] + i);
+      vw = _mm256_mul_ps(vw, sv[r]);
       vw = _mm256_fnmadd_ps(uv[r], xv, vw);
       _mm256_storeu_ps(w[r] + i, vw);
     }
   }
   for (; i < n; ++i) {
     const float xv = x[i];
-    for (int r = 0; r < R; ++r) w[r][i] -= u[r] * xv;
+    for (int r = 0; r < R; ++r) w[r][i] = w[r][i] * s[r] - u[r] * xv;
   }
 }
 
@@ -211,20 +231,29 @@ void Mixer::BatchDot(const float* inputs, float* const* weights, int count,
 }
 
 void Mixer::BatchTrain(const float* inputs, float* const* weights, int count,
-    int n, const float* updates) {
+    int n, const float* updates, const float* shrinks) {
 #ifdef __AVX2__
   int r = 0;
   for (; r + 3 < count; r += 4) {
-    TrainRowsExact<4>(inputs, weights + r, n, updates + r);
+    TrainRowsExact<4>(inputs, weights + r, n, updates + r, shrinks + r);
   }
   for (; r < count; ++r) {
-    AvxWeightUpdate(weights[r], inputs, updates[r], n);
+    if (updates[r] == 0.0f) {
+      AvxScale(weights[r], shrinks[r], n);
+    } else {
+      AvxWeightUpdateWithShrink(weights[r], inputs, updates[r], shrinks[r], n);
+    }
   }
 #else
   for (int r = 0; r < count; ++r) {
     float* w = weights[r];
     const float u = updates[r];
-    for (int i = 0; i < n; ++i) w[i] -= u * inputs[i];
+    const float s = shrinks[r];
+    if (u == 0.0f) {
+      for (int i = 0; i < n; ++i) w[i] *= s;
+    } else {
+      for (int i = 0; i < n; ++i) w[i] = w[i] * s - u * inputs[i];
+    }
   }
 #endif
 }
@@ -266,9 +295,15 @@ float Mixer::ComputeUpdate(int bit) {
   }
   if (row_decay > decay) decay = row_decay;
 
-  float err = e2e_use_ ? e2e_err_ : (Sigmoid::Logistic(p_) - bit);
-  e2e_use_ = false;
-  float update = decay * learning_rate_ * err;
+  float p = Sigmoid::Logistic(p_);
+  constexpr float kGateEps = 0.020f;
+  constexpr float kL2Decay = 3.0e-5f;
+
+  bool confident = (bit == 0 && p < kGateEps) || (bit == 1 && p > (1.0f - kGateEps));
+  float step_lr = decay * learning_rate_;
+  float shrink = 1.0f - step_lr * kL2Decay;
+  current_shrink_ = shrink;
+
   ++steps_;
   ++data->steps;
   if (data->steps > max_steps_) {
@@ -277,24 +312,91 @@ float Mixer::ComputeUpdate(int bit) {
 
   int ne = extra_inputs_.size();
   if (ne > 0) {
+    if (confident) {
 #ifdef __AVX2__
-    AvxWeightUpdate(&data->extra_weights[0], &extra_inputs_[0], update, ne);
+      AvxScale(&data->extra_weights[0], shrink, ne);
 #else
-    data->extra_weights -= update * extra_inputs_;
+      for (int i = 0; i < ne; ++i) data->extra_weights[i] *= shrink;
 #endif
+    } else {
+      float err = e2e_use_ ? e2e_err_ : (p - bit);
+      float update = step_lr * err;
+#ifdef __AVX2__
+      AvxWeightUpdateWithShrink(&data->extra_weights[0], &extra_inputs_[0], update, shrink, ne);
+#else
+      for (int i = 0; i < ne; ++i) data->extra_weights[i] = data->extra_weights[i] * shrink - update * extra_inputs_[i];
+#endif
+    }
   }
-  return update;
+
+  if (confident) {
+    e2e_use_ = false;
+    return 0.0f;
+  }
+
+  float err = e2e_use_ ? e2e_err_ : (p - bit);
+  e2e_use_ = false;
+  return step_lr * err;
 }
 
 void Mixer::Perceive(int bit) {
-  float update = ComputeUpdate(bit);
-  ContextData* data = current_data_;
+  ContextData* data = current_data_ ? current_data_ : GetContextData();
   current_data_ = nullptr;
 
-#ifdef __AVX2__
+  float p = Sigmoid::Logistic(p_);
+  constexpr float kGateEps = 0.020f;
+  constexpr float kL2Decay = 3.0e-5f;
+
+  bool confident = (bit == 0 && p < kGateEps) || (bit == 1 && p > (1.0f - kGateEps));
+
+  float decay = 0.9 / pow(0.0000001 * steps_ + 0.8, 0.8);
+  decay *= 1.5 - ((1.0 * data->steps) / max_steps_);
+
+  float row_decay = 0.10f;
+  if (data->steps < 25000) {
+    row_decay = 0.3f;
+    if (data->steps < 5000) {
+      row_decay = 0.7f;
+      if (data->steps < 1000) {
+        row_decay = 1.0f;
+      }
+    }
+  }
+  if (row_decay > decay) decay = row_decay;
+
+  float step_lr = decay * learning_rate_;
+  float shrink = 1.0f - step_lr * kL2Decay;
+
+  ++steps_;
+  ++data->steps;
+  if (data->steps > max_steps_) {
+    max_steps_ = data->steps;
+  }
+
   int n = inputs_.size();
-  AvxWeightUpdate(&data->weights[0], &inputs_[0], update, n);
+  int ne = extra_inputs_.size();
+
+  if (confident) {
+#ifdef __AVX2__
+    AvxScale(&data->weights[0], shrink, n);
+    if (ne > 0) AvxScale(&data->extra_weights[0], shrink, ne);
 #else
-  data->weights -= update * inputs_;
+    for (int i = 0; i < n; ++i) data->weights[i] *= shrink;
+    for (int i = 0; i < ne; ++i) data->extra_weights[i] *= shrink;
+#endif
+    e2e_use_ = false;
+    return;
+  }
+
+  float err = e2e_use_ ? e2e_err_ : (p - bit);
+  e2e_use_ = false;
+  float update = step_lr * err;
+
+#ifdef __AVX2__
+  AvxWeightUpdateWithShrink(&data->weights[0], &inputs_[0], update, shrink, n);
+  if (ne > 0) AvxWeightUpdateWithShrink(&data->extra_weights[0], &extra_inputs_[0], update, shrink, ne);
+#else
+  for (int i = 0; i < n; ++i) data->weights[i] = data->weights[i] * shrink - update * inputs_[i];
+  for (int i = 0; i < ne; ++i) data->extra_weights[i] = data->extra_weights[i] * shrink - update * extra_inputs_[i];
 #endif
 }

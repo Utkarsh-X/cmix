@@ -30,7 +30,8 @@ class Mixer {
   static void BatchDot(const float* inputs, float* const* weights, int count,
       int n, float* out_dots);
   static void BatchTrain(const float* inputs, float* const* weights, int count,
-      int n, const float* updates);
+      int n, const float* updates, const float* shrinks);
+  float CurrentShrink() const { return current_shrink_; }
   float E2EP() const { return p_; }
   const float* E2EWRow();
   const float* E2EXRow();
@@ -52,6 +53,7 @@ class Mixer {
   ContextData* cached_ptr_ = nullptr;
   float e2e_err_ = 0.0f;
   bool e2e_use_ = false;
+  float current_shrink_ = 1.0f;
   ContextData* current_data_ = nullptr;
 };
 
