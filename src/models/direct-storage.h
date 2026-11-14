@@ -8,6 +8,12 @@
 #include <cstdint>
 #include <vector>
 
+namespace {
+inline constexpr std::array<float, 256> kBitTreePrior = {
+#include "bittree_table.inc"
+};
+}  // namespace
+
 // Shared lazy-initialized, demand-committed storage for Direct and DirectHash.
 // Untouched rows remain uncommitted (0 PrivateCommit, 0 WorkingSet) and return
 // the exact baseline initial prediction of 0.5f until first Perceive().
@@ -26,7 +32,7 @@ class LazyDirectTable {
   }
 
   inline float Predict(size_t row, unsigned int bit_context) const {
-    return IsReady(row) ? predictions_[row][bit_context] : 0.5f;
+    return IsReady(row) ? predictions_[row][bit_context] : kBitTreePrior[bit_context];
   }
 
   inline void Perceive(size_t row, unsigned int bit_context, int bit,
@@ -43,7 +49,7 @@ class LazyDirectTable {
 
   inline void ResetIfReady(size_t row) {
     if (IsReady(row)) {
-      predictions_[row].fill(0.5);
+      predictions_[row] = kBitTreePrior;
       counts_[row].fill(0);
     }
   }
@@ -52,7 +58,7 @@ class LazyDirectTable {
   void InitRow(size_t row) {
     predictions_.EnsureElement(row);
     counts_.EnsureElement(row);
-    predictions_[row].fill(0.5);
+    predictions_[row] = kBitTreePrior;
     // counts_[row] is already zero-filled by DemandBuffer fresh page commit.
     ready_[row >> 6] |= (1ULL << (row & 63));
   }
