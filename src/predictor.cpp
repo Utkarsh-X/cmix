@@ -161,8 +161,10 @@ void Predictor::AddDirect() {
       AddModel(new Direct(context.GetContext(), manager_.bit_context_, limit,
           delta, context.Size()));
     } else {
+      // EXP-132: Expand Order-3 DirectHash capacity from 100K to 500K (matches word DirectHash)
+      // Drops load factor on enwik8_1mb from 32.5% to 6.5%, eliminating clustering timeouts.
       AddModel(new DirectHash(context.GetContext(), manager_.bit_context_,
-          limit, delta, 100000));
+          limit, delta, 500000));
     }
   }
 }

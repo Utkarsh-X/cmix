@@ -21,14 +21,15 @@ void DirectHash::ByteUpdate() {
   const size_t n = table_.size();
   if (n == 0) return;
   index_ = byte_context_ % n;
-  for (int i = 0; i < 20; ++i) {
+  // EXP-132: Expand probing limit from 20 to 64 to eliminate clustering evictions
+  for (int i = 0; i < 64; ++i) {
     checksums_.EnsureElement(index_);
     if (checksums_[index_] == 0) {
       checksums_[index_] = byte_context_;
       break;
     }
     if (checksums_[index_] == byte_context_) break;
-    if (i == 19) {
+    if (i == 63) {
       table_.ResetIfReady(static_cast<size_t>(index_));
       checksums_[index_] = byte_context_;
       break;
