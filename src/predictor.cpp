@@ -107,7 +107,7 @@ void Predictor::AddPAQ8() {
 }
 
 void Predictor::AddBracket() {
-  AddModel(new Bracket(manager_.bit_context_, 200, 10, 100000, vocab_));
+  AddModel(new Bracket(manager_.bit_context_, 200, 10, 1024, vocab_));
   const Context& context = manager_.AddContext(std::unique_ptr<Context>(
       new BracketContext(manager_.bit_context_, 256, 15)));
   AddModel(new Direct(context.GetContext(), manager_.bit_context_, 30, 0.5f,
