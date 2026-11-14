@@ -222,7 +222,7 @@ static const int M_x2W0 = (2560+1) * (1);
 static const int M_x2wr = (10500+0) * (1);
 
 static const int M_mix1_Volume = 1* 4* (1<<4)* (1<<3)* 79;
-static const int M_mix2_Volume = 1* 3* (1<<1)* (1<<8)* 256;
+static const int M_mix2_Volume = 1* 3* (1<<4)* (1<<4)* 79;
 static const int M_sm6x_Volume = 1* 3* (1<<4)* (1<<8)* 256;
 static const int M_sm7x_Volume = 1* 3* (1<<4)* (1<<8)* 255;
 
@@ -278,9 +278,9 @@ uint M_Estimate( uint p, uint8_t ctx_s1 = 0, uint8_t ctx_s2 = 0 ) {
 
   mix2 = 0;
   mix2 = mix2*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
-  mix2 = (mix2<<1) + (((ctx_s2)>>1)&1);
-  mix2 = (mix2<<8) + ((pc)&255);
-  mix2 = (mix2*256) + (j);
+  mix2 = (mix2<<4) + ((ctx_s2)&15);
+  mix2 = (mix2<<4) + (((pc)>>4)&15);
+  mix2 = (mix2*79) + M_mx1mask0[j];
 
   sm6x = 0;
   sm6x = sm6x*3 + ((prq>0+(1-1))+(prq>14+(1-1)));
