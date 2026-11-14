@@ -10,6 +10,7 @@
 #include "models/byte-model.h"
 #include "models/fast_weights.h"
 #include "models/ppmd.h"
+#include "models/match.h"
 #include "context-manager.h"
 #include "char_rate.h"
 
@@ -51,6 +52,7 @@ class Predictor {
   void E2EGrad(int bit);
 
   std::vector<std::unique_ptr<Model>> models_;
+  std::vector<Match*> match_models_;
   std::vector<std::unique_ptr<ByteModel>> byte_models_;
   SSE sse_;
   std::vector<std::unique_ptr<MixerInput>> layers_;

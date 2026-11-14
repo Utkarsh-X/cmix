@@ -16,6 +16,7 @@ class Match : public Model {
   const std::valarray<float>& Predict();
   void Perceive(int bit);
   void ByteUpdate();
+  inline unsigned char MatchLength() const { return cur_match_ ? match_length_ : 0; }
 
  private:
   const std::vector<unsigned char>& history_;

@@ -139,8 +139,10 @@ void Predictor::AddWord() {
   for (const auto& params : model_params2) {
     std::unique_ptr<Context> hash(new Sparse(manager_.words_, params));
     const Context& context = manager_.AddContext(std::move(hash));
-    AddModel(new Match(manager_.history_, context.GetContext(),
-        manager_.bit_context_, 200, 0.5, 10000000, &(manager_.longest_match_)));
+    Match* m = new Match(manager_.history_, context.GetContext(),
+        manager_.bit_context_, 200, 0.5, 10000000, &(manager_.longest_match_));
+    AddModel(m);
+    match_models_.push_back(m);
     if (params[0] == 1 && params.size() == 1) {
       AddModel(new Indirect(manager_.run_map_, context.GetContext(),
           manager_.bit_context_, delta, manager_.shared_map_));
@@ -184,9 +186,11 @@ void Predictor::AddMatch() {
     const Context& context = manager_.AddContext(std::unique_ptr<Context>(
         new ContextHash(manager_.bit_context_, params[0], params[1])));
     unsigned long long max_size = (params.size() > 2) ? params[2] : default_max_size;
-    AddModel(new Match(manager_.history_, context.GetContext(),
+    Match* m = new Match(manager_.history_, context.GetContext(),
         manager_.bit_context_, limit, delta, std::min(max_size, context.Size()),
-        &(manager_.longest_match_)));
+        &(manager_.longest_match_));
+    AddModel(m);
+    match_models_.push_back(m);
   }
 }
 
@@ -529,6 +533,12 @@ void Predictor::Perceive(int bit) {
     if (i == fxcm_index_) continue;
     models_[i]->Perceive(bit);
   }
+  // EXP-153: Real-time bit synchronization of longest_match_ to eliminate phantom match state
+  unsigned long long max_match = 0;
+  for (const auto* m : match_models_) {
+    max_match = std::max(max_match, static_cast<unsigned long long>(m->MatchLength() / 32));
+  }
+  manager_.longest_match_ = max_match;
   for (const auto& model : byte_models_) {
     model->Perceive(bit);
   }
