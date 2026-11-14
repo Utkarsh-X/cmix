@@ -78,9 +78,11 @@ struct SSEi {
   }
 
   void SSE_Update( byte c, int wr0, SSEi_updstr& X ) {
+    int surprise = (c == 0 ? (SCALE - X.P) : X.P);
+    int wr = wr0 + ((surprise * 64) >> SCALElog);
 
-    X.P = X.P*(SCALE-wr0)>>SCALElog;
-    if( c==0 ) X.P+=wr0;
+    X.P = X.P*(SCALE-wr)>>SCALElog;
+    if( c==0 ) X.P+=wr;
 
     int dC = (X.C1[0]-X.C1[1]);
     int sw_dC= ((X.sw*dC+mSCALE)>>SCALElog);
