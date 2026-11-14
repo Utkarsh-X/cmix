@@ -233,7 +233,8 @@ struct M_T {
   uint mix1_s0,mix1_s1,mix1_p, mix1_p1,mix1_p2;
   uint mix2_s0,mix2_s1,mix2_p;
   uint M_j, M_pc, M_ffl;
-
+  uint byte_count;
+  int cur_sm6wrB, cur_sm7wrB, cur_x1wr, cur_x2wr;
 
   SSEi<7> s6[M_sm6x_Volume];
   Mixer x1[M_mix1_Volume];
@@ -251,6 +252,11 @@ struct M_T {
     for( i=0; i<M_mix2_Volume; i++ ) x2[i].Init(M_x2W0);
 
     M_j=1; M_pc=0; M_ffl=0;
+    byte_count = 0;
+    cur_sm6wrB = 300;
+    cur_sm7wrB = 350;
+    cur_x1wr = 13000;
+    cur_x2wr = 17000;
 
   }
   void M_Quit( void ) {
@@ -308,11 +314,11 @@ uint M_Estimate( uint p, uint8_t ctx_s1 = 0, uint8_t ctx_s2 = 0 ) {
 }
 
 void M_Update( uint bit ) {
-  s6[sm6x].SSE_Update( bit, M_sm6wrA*128+M_sm6wrB, su6 );
-  x1[mix1].Update( bit, mix1_s0,mix1_s1, M_x1wr, mix1_p );
+  s6[sm6x].SSE_Update( bit, M_sm6wrA*128+cur_sm6wrB, su6 );
+  x1[mix1].Update( bit, mix1_s0,mix1_s1, cur_x1wr, mix1_p );
 
-  s7[sm7x].SSE_Update( bit, M_sm6wrA*128+M_sm7wrB, su7 );
-  x2[mix2].Update( bit, mix2_s0,mix2_s1, M_x2wr, mix2_p );
+  s7[sm7x].SSE_Update( bit, M_sm6wrA*128+cur_sm7wrB, su7 );
+  x2[mix2].Update( bit, mix2_s0,mix2_s1, cur_x2wr, mix2_p );
 
   M_j += M_j+bit;
 
@@ -320,6 +326,13 @@ void M_Update( uint bit ) {
     M_ffl= byte(M_ffl*2+(M_pc>=0x40));
     M_pc = byte(M_j);
     M_j = 1;
+
+    ++byte_count;
+    uint decay_factor = (1024ULL * 65536ULL) / (65536ULL + byte_count);
+    cur_sm6wrB = 160 + static_cast<int>((140 * decay_factor) >> 10);
+    cur_sm7wrB = 200 + static_cast<int>((150 * decay_factor) >> 10);
+    cur_x1wr = 8000 + static_cast<int>((5000 * decay_factor) >> 10);
+    cur_x2wr = 10500 + static_cast<int>((6500 * decay_factor) >> 10);
   }
 }
 };
