@@ -79,9 +79,10 @@ void Predictor::AddMixer(int layer, const unsigned long long& context,
     float learning_rate) {
   // Asymmetric layer multipliers: 1.300x for Layer 0, 0.750x for Layer 1 (Ex-Girlfriend mixer_lr)
   const float layer_gain = (layer == 1) ? 0.750f : 1.300f;
+  const unsigned int extra_size = (layer == 1) ? 0 : mixers_[layer].size();
   mixers_[layer].push_back(std::unique_ptr<Mixer>(new Mixer(
       layers_[layer]->Inputs(), layers_[layer]->ExtraInputs(), context,
-      learning_rate * layer_gain, mixers_[layer].size())));
+      learning_rate * layer_gain, extra_size)));
 }
 
 void Predictor::AddByteMixer(ByteMixer* byte_mixer) {
@@ -427,6 +428,7 @@ void Predictor::AddMixers() {
   layers_[1]->SetNumModels(input_size);
   AddMixer(1, manager_.zero_context_, 0.0003);
   mixers_[1][0]->E2ESeedHead(mixers_[0].size(), 1.0f / (float)mixers_[0].size());
+  AddMixer(1, manager_.longest_match_regime_, 0.00015);
 }
 
 int lstmpr=0, lstmex=0;
@@ -471,6 +473,10 @@ float Predictor::Predict() {
   }
   auxiliary_average /= auxiliary_.size();
   manager_.auxiliary_context_ = auxiliary_average * 15;
+  if (manager_.longest_match_ >= 8) manager_.longest_match_regime_ = 3;
+  else if (manager_.longest_match_ >= 3) manager_.longest_match_regime_ = 2;
+  else if (manager_.longest_match_ >= 1) manager_.longest_match_regime_ = 1;
+  else manager_.longest_match_regime_ = 0;
 
   const unsigned int n0 = (unsigned int)mixers_[0].size();
   if (n0 > 0 && n0 <= 64) {
@@ -498,7 +504,9 @@ float Predictor::Predict() {
     float p = layers_[0]->Inputs()[auxiliary_[i]];
     layers_[1]->SetStretchedInput(mixers_[0].size() + i, p);
   }
-  float p = Sigmoid::Logistic(mixers_[1][0]->Mix());
+  float p_base = mixers_[1][0]->Mix();
+  float p_res  = mixers_[1][1]->Mix();
+  float p = Sigmoid::Logistic(p_base + p_res);
 
   // EXP-081: Zero-RAM SSE context conditioning (Surprise x PPMd order & Dispute x Lexical)
   int ppmd_order = ppmd_ ? ppmd_->Order() : 0;
@@ -622,17 +630,19 @@ void Predictor::Pretrain(int bit) {
 void Predictor::E2EGrad(int bit) {
   const unsigned int n = (unsigned int)mixers_[0].size();
   if (n == 0 || n > 64) return;
-  const float g_final = Sigmoid::Logistic(mixers_[1][0]->E2EP()) - (float)bit;
+  const float p_combined = mixers_[1][0]->E2EP() + mixers_[1][1]->E2EP();
+  const float g_final = Sigmoid::Logistic(p_combined) - (float)bit;
   float gamma[64];
   const float* xw[64];
   for (unsigned int k = 0; k < n; ++k) xw[k] = mixers_[0][k]->E2EXRow();
-  const float* const w1 = mixers_[1][0]->E2EWRow();
+  const float* const w1_base = mixers_[1][0]->E2EWRow();
+  const float* const w1_res  = mixers_[1][1]->E2EWRow();
   const float s_min = layers_[0]->StretchedMin();
   const float s_max = layers_[0]->StretchedMax();
   unsigned int i = n;
   while (i > 0) {
     --i;
-    float s = w1[i];
+    float s = w1_base[i] + w1_res[i];
     for (unsigned int k = i + 1; k < n; ++k) {
       if (xw[k]) s += gamma[k] * xw[k][i];
     }
@@ -642,4 +652,6 @@ void Predictor::E2EGrad(int bit) {
   for (unsigned int j = 0; j < n; ++j) {
     mixers_[0][j]->E2ESetErr(g_final * gamma[j]);
   }
+  mixers_[1][0]->E2ESetErr(g_final);
+  mixers_[1][1]->E2ESetErr(g_final);
 }
