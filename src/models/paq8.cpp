@@ -4162,7 +4162,7 @@ void nestModel(Mixer& m)
 {
   static int ic=0, bc=0, pc=0, qc=0, lvc=0, ac=0, ec=0, uc=0, sense1=0, sense2=0, w=0;
   static unsigned int vc=0, wc=0;
-  static ContextMap cm(MEM()/2, 12);
+  static ContextMap cm(MEM()*2, 12);
 
   if (bpos==0) {
     int c=c4&255, matched=1, vv;
