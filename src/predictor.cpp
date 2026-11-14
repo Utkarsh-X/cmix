@@ -110,7 +110,7 @@ void Predictor::AddBracket() {
   AddModel(new Bracket(manager_.bit_context_, 200, 10, 100000, vocab_));
   const Context& context = manager_.AddContext(std::unique_ptr<Context>(
       new BracketContext(manager_.bit_context_, 256, 15)));
-  AddModel(new Direct(context.GetContext(), manager_.bit_context_, 30, 0,
+  AddModel(new Direct(context.GetContext(), manager_.bit_context_, 30, 0.5f,
       context.Size()));
   AddModel(new Indirect(manager_.nonstationary_, context.GetContext(),
       manager_.bit_context_, 300, manager_.shared_map_));
@@ -145,13 +145,13 @@ void Predictor::AddWord() {
       AddModel(new Indirect(manager_.run_map_, context.GetContext(),
           manager_.bit_context_, delta, manager_.shared_map_));
       AddModel(new DirectHash(context.GetContext(), manager_.bit_context_, 30,
-          0, 500000));
+          0.5f, 500000));
     }
   }
 }
 
 void Predictor::AddDirect() {
-  float delta = 0;
+  float delta = 0.5f;
   int limit = 30;
   std::vector<std::vector<int>> model_params = {{0, 8}, {1, 8}, {2, 8}, {3, 8}};
   for (const auto& params : model_params) {
@@ -198,7 +198,7 @@ void Predictor::AddTemplate() {
   template_context_ = &manager_.AddContext(std::unique_ptr<Context>(
       new TemplateContext(manager_.bit_context_)));
   AddModel(new Direct(template_context_->GetContext(), manager_.bit_context_,
-      30, 0, template_context_->Size()));
+      30, 0.5f, template_context_->Size()));
   AddModel(new Indirect(manager_.nonstationary_, template_context_->GetContext(),
       manager_.bit_context_, 300, manager_.shared_map_));
 }
@@ -207,7 +207,7 @@ void Predictor::AddTable() {
   table_context_ = &manager_.AddContext(std::unique_ptr<Context>(
       new TableContext(manager_.bit_context_)));
   AddModel(new Direct(table_context_->GetContext(), manager_.bit_context_,
-      30, 0, table_context_->Size()));
+      30, 0.5f, table_context_->Size()));
   AddModel(new Indirect(manager_.nonstationary_, table_context_->GetContext(),
       manager_.bit_context_, 300, manager_.shared_map_));
 }
@@ -216,7 +216,7 @@ void Predictor::AddCitation() {
   citation_context_ = &manager_.AddContext(std::unique_ptr<Context>(
       new CitationContext(manager_.bit_context_)));
   AddModel(new Direct(citation_context_->GetContext(), manager_.bit_context_,
-      30, 0, citation_context_->Size()));
+      30, 0.5f, citation_context_->Size()));
   AddModel(new Indirect(manager_.nonstationary_, citation_context_->GetContext(),
       manager_.bit_context_, 300, manager_.shared_map_));
 }
@@ -225,7 +225,7 @@ void Predictor::AddMorph() {
   morph_context_ = &manager_.AddContext(std::unique_ptr<Context>(
       new MorphContext(manager_.bit_context_)));
   AddModel(new Direct(morph_context_->GetContext(), manager_.bit_context_,
-      30, 0, morph_context_->Size()));
+      30, 0.5f, morph_context_->Size()));
   AddModel(new Indirect(manager_.nonstationary_, morph_context_->GetContext(),
       manager_.bit_context_, 250, manager_.shared_map_));
 }
@@ -234,7 +234,7 @@ void Predictor::AddNamespace() {
   namespace_context_ = &manager_.AddContext(std::unique_ptr<Context>(
       new NamespaceContext(manager_.bit_context_)));
   AddModel(new Direct(namespace_context_->GetContext(), manager_.bit_context_,
-      30, 0, namespace_context_->Size()));
+      30, 0.5f, namespace_context_->Size()));
   AddModel(new Indirect(manager_.nonstationary_, namespace_context_->GetContext(),
       manager_.bit_context_, 300, manager_.shared_map_));
 }
