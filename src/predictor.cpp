@@ -152,11 +152,17 @@ void Predictor::AddWord() {
 
 void Predictor::AddDirect() {
   float delta = 0.5f;
-  int limit = 30;
-  std::vector<std::vector<int>> model_params = {{0, 8}, {1, 8}, {2, 8}, {3, 8}};
-  for (const auto& params : model_params) {
+  std::vector<std::pair<std::vector<int>, int>> model_configs = {
+      {{0, 8}, 60},  // Order-0: higher limit for stationary unigram letter frequencies
+      {{1, 8}, 45},  // Order-1: calibrated balance for bigram transitions
+      {{2, 8}, 20},  // Order-2: nimble adaptation for sparse trigram phrases
+      {{3, 8}, 20}   // Order-3: nimble adaptation for hashed 4-grams
+  };
+  for (const auto& cfg : model_configs) {
+    const auto& params = cfg.first;
+    int limit = cfg.second;
     const Context& context = manager_.AddContext(std::unique_ptr<Context>(
-        new ContextHash(manager_.bit_context_,params[0], params[1])));
+        new ContextHash(manager_.bit_context_, params[0], params[1])));
     if (params[0] < 3) {
       AddModel(new Direct(context.GetContext(), manager_.bit_context_, limit,
           delta, context.Size()));
