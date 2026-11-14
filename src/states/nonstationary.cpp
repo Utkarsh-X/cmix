@@ -7,5 +7,8 @@ int Nonstationary::Next(int state, int bit) const {
 }
 
 float Nonstationary::InitProbability(int state) const {
-  return 0.5;
+  static const float kInitProb[256] = {
+#include "nonstationary_table.inc"
+  };
+  return kInitProb[state & 0xFF];
 }
