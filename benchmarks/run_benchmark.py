@@ -8,8 +8,8 @@ GOLDEN_HASHES = {
 
 RECORDS = {
     "test_15k.dat": 2938,      # EXP-137 World Record (-1 B Win, -35 B vs baseline)
-    "enwik8_100kb": 19273,     # EXP-138/140/141 World Record (-3 B Win, -35 B vs baseline)
-    "enwik8_1mb":   171292,    # EXP-141 World Record (-45 B Win vs EXP-130, -583 B vs baseline)
+    "enwik8_100kb": 19269,     # EXP-142 World Record (-4 B Win vs EXP-141, -451 B vs baseline)
+    "enwik8_1mb":   171284,    # EXP-142 World Record (-8 B Win vs EXP-141, -591 B vs baseline)
 }
 
 def run_pass(cmix_bin, dict_file, mode_flag, in_file, out_file, is_decomp=False):
