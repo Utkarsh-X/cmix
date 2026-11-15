@@ -7,26 +7,29 @@
 #include <cmath>
 #include <algorithm>
 #include <memory>
+#include <immintrin.h>
 
 #include "byte-model.h"
 
-// EXP-071: Pure-Online Fast-Weights Linear Associative Memory (0 Checkpoint Bytes)
-// Maintains an online rank-1 associative perturbation matrix W in R^{256 x D}
-// initialized to all zeros. Updates per-byte via surrogate cross-entropy
-// backpropagation with Normalized Least Mean Squares (NLMS) and FW-ROW
-// per-feature RMS preconditioning.
+// ============================================================================
+// EXP-167: FW-DUAL Pure-Online Fast-Weights Associative Memory Engine
+// 0 Checkpoint Bytes Overhead. Fully reversible online learning.
+// ============================================================================
 class FastWeightsEngine {
  public:
-  explicit FastWeightsEngine(int feat_dim = 200, int vocab_size = 256);
+  static constexpr int kDefaultFeatDim = 512;
+  static constexpr int kVocabSize = 256;
 
-  // Computes logits = W * feat + b, applies softcap(15), and calculates
-  // normalized softmax byte probabilities across valid vocab symbols.
+  explicit FastWeightsEngine(int feat_dim = kDefaultFeatDim);
+
+  // Computes associative logits = (W_long + W_short) * sh + b, applies 15*tanh(z/15),
+  // and computes normalized softmax byte probabilities.
   void Forward(const float* feat, const std::vector<bool>& vocab);
 
-  // Executes online surrogate backpropagation given observed ground-truth byte:
-  // dl = (p - 1_y) * (1 - tanh(z/15)^2)
-  // sh = FW-ROW preconditioned features
-  // W -= eta * dl (outer product) sh
+  // Executes online surrogate backpropagation on ground-truth target byte:
+  // 1. FW-ROW running variance EMA & feature preconditioning
+  // 2. NLMS contractive denominator step computation
+  // 3. Dual-rate outer product update to W_long and W_short
   void Update(uint8_t target_byte);
 
   const std::vector<float>& Probs() const { return probs_; }
@@ -36,33 +39,31 @@ class FastWeightsEngine {
 
  private:
   int feat_dim_;
-  int vocab_size_;
   uint64_t step_t_ = 0;
 
-  // Synaptic weight matrix: row i is weights for symbol i (size: vocab_size_ * feat_dim_)
-  // Strictly zero-initialized at process start -> 0 checkpoint bytes overhead!
-  std::vector<float> W_;
-  std::vector<float> b_;
+  // Synaptic associative weight matrices (zero-initialized at startup)
+  std::vector<float> W_long_;   // Persistent syntax memory (lambda = 1.0)
+  std::vector<float> W_short_;  // Bursty recency memory (lambda = 0.990)
+  std::vector<float> b_;        // Per-byte bias
 
-  // Per-feature running RMS variance for FW-ROW preconditioning
+  // FW-ROW per-feature second-moment variance running average
   std::vector<float> v_;
 
-  // Stored inputs from step t used for step t update
+  // Cached scratchpad vectors for step t causal pairing
   std::vector<float> h_prev_;
   std::vector<float> logits_;
   std::vector<float> lc_;
   std::vector<float> probs_;
 };
 
-// Byte-to-bit slicing wrapper derived from ByteModel
+// Byte-to-bit slicing wrapper derived from ByteModel for CMIX mixer integration
 class FastWeightsModel : public ByteModel {
  public:
-  FastWeightsModel(const std::vector<bool>& vocab, int feat_dim = 200);
+  FastWeightsModel(const std::vector<bool>& vocab, int feat_dim = FastWeightsEngine::kDefaultFeatDim);
 
-  // Called to update weights with observed byte, then compute new distribution
+  // Updates associative memory with observed byte, then forward-projects next features
   void UpdateByte(uint8_t target_byte, const float* next_feat);
 
-  // ByteUpdate override (resets bit interval [0, 255])
   void ByteUpdate() override;
 
   FastWeightsEngine& Engine() { return engine_; }
