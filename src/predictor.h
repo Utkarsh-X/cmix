@@ -12,6 +12,7 @@
 #include "models/ppmd.h"
 #include "context-manager.h"
 #include "char_rate.h"
+#include "states/xml_dfa.h"
 
 #include <vector>
 #include <set>
@@ -69,6 +70,7 @@ class Predictor {
   const Context* namespace_context_ = nullptr;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
+  XmlDfa xml_dfa_;
 };
 
 #endif
