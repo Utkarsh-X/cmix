@@ -425,6 +425,14 @@ void Predictor::AddMixers() {
       manager_.recent_bytes_[1], 256, 256)));
   AddMixer(0, combined2.GetContext(), 0.003);
 
+  // EXP-177: Layer-0 High-Yield Context Expansion from ex-girlfriend
+  AddMixer(0, manager_.page_sur, 0.003);       // Surprise-conditioned MoE (6144 states)
+  extern unsigned long long wrtcxt;
+  AddMixer(0, wrtcxt, 0.002);                  // Active fxcmv1 dictionary token ID
+  AddMixer(0, manager_.wordscxt, 0.005);       // Lexical word runs vs delimiters (32768 states)
+  AddMixer(0, manager_.b3streamcxt, 0.001);   // 3-bit syntax stream with bracket resets (512 states)
+  AddMixer(0, manager_.b2streamcxt, 0.001);   // 2-bit class stream (1024 states)
+
   input_size = mixers_[0].size() + auxiliary_.size();
   layers_[1]->SetNumModels(input_size);
   AddMixer(1, manager_.zero_context_, 0.0003);

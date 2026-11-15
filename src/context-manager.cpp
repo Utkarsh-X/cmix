@@ -1,4 +1,8 @@
 #include "context-manager.h"
+#include "contexts/page_contexts.h"
+
+extern const unsigned char wrt_2b[256];
+extern const unsigned char wrt_3b[256];
 
 ContextManager::ContextManager() : history_(100000000, 0),
     shared_map_(256*8000000, 0), words_(8, 0), recent_bytes_(8, 0) {}
@@ -28,6 +32,25 @@ void ContextManager::UpdateHistory() {
 
 void ContextManager::UpdateWords() {
   unsigned char c = bit_context_;
+
+  // EXP-177: Layer-0 syntax stream & word boundary tracking from ex-girlfriend
+  words = words * 2;
+  if ((c >= 'a' && c <= 'z') || c >= 0x80) words += 1;
+  if (c == '\n') words = 0xfffc;
+  else if (c == '.' || c == ',') words |= 0xffc;
+
+  n2bState = wrt_2b[c];
+  b2stream = b2stream * 4 + n2bState;
+  b2streamcxt = b2stream & 0x3ff;
+
+  if (c == '}' || c == '{' || c == ']') b3stream = (b3stream & 0xfffffff8) + 3;
+  else if (c == '=') b3stream = (b3stream & 0xfffffff8) + 4;
+  n3bState = wrt_3b[c];
+  b3stream = b3stream * 8 + n3bState;
+  if (c == 10 || c == ')') b3stream = b3stream << 6;
+  if (c == '|') b3stream = b3stream * 8 + wrt_3b[c];
+  b3streamcxt = b3stream & 0x1ff;
+
   if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80) {
     words_[7] = words_[7] * 997*16 + c;
   } else {
@@ -91,4 +114,7 @@ void ContextManager::UpdateContexts(int bit) {
   for (const auto& context : bit_contexts_) {
     context->Update();
   }
+  // EXP-177: Update bit-conditioned contexts on every bit
+  wordscxt = (words & 0x7F) * 256 + long_bit_context_;
+  page_sur = (unsigned long long)pagectx::surprise.cxtmix * 256 + long_bit_context_;
 }
