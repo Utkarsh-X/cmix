@@ -268,8 +268,8 @@ void Predictor::AddMixers() {
       vocab_size, new Lstm(vocab_size, vocab_size, 200, 2, 100, 0.03, 10)));
   AddAuxiliary();
 
-  // EXP-167: FW-DUAL Multi-Scale Associative Memory (512 dimensions)
-  fast_weights_.reset(new FastWeightsModel(vocab_, 512));
+  // EXP-174: Quad-Block Multi-Scale Fast-Weights Associative Memory (1024 dimensions)
+  fast_weights_.reset(new FastWeightsModel(vocab_, FastWeightsEngine::kTotalFeatDim));
   AddAuxiliary();
 
   for (int i = 0; i < 2; ++i) {
@@ -606,27 +606,67 @@ void Predictor::Perceive(int bit) {
       byte_mixer->ByteUpdate();
     }
     if (fast_weights_ && !byte_mixers_.empty()) {
-      // Assemble 512-dimensional multi-scale feature vector:
-      alignas(32) float feat_512[512] = {0.0f};
+      // Assemble 1024-dimensional Quad-Block Multi-Scale Feature Representation:
+      alignas(32) float feat_1024[1024] = {0.0f};
 
-      // 1. Recurrent LSTM hidden states L0 + L1 (400 dims)
-      const auto& h_lstm = byte_mixers_[0]->Hidden();
-      int copy_lstm = std::min((int)h_lstm.size(), 400);
-      std::memcpy(feat_512, &h_lstm[0], copy_lstm * sizeof(float));
-
-      // 2. Local character context n-gram embeddings (64 dims)
+      // Block 0 (h0, 0..255): Local Lexical & Character Context N-Grams
+      // 8 recent bytes mapped to 16 dims each (8 bits + 8 bits byte-parity/hash): 128 dims
       for (int k = 0; k < 8; ++k) {
         uint8_t b = (uint8_t)manager_.recent_bytes_[k];
-        feat_512[400 + k * 8 + (b & 7)] = 1.0f;
+        for (int bit = 0; bit < 8; ++bit) {
+          feat_1024[k * 16 + bit] = ((b >> bit) & 1) ? 1.0f : 0.0f;
+        }
+        feat_1024[k * 16 + 8 + (b & 7)] = 1.0f;
+      }
+      // Trailing 128 dims of Block 0: Character-level frequency / interval features
+      if (!layers_.empty() && layers_[0]->Inputs().size() > 0) {
+        const auto& in0 = layers_[0]->Inputs();
+        int copy_in0_b0 = std::min((int)in0.size(), 128);
+        if (copy_in0_b0 > 0) {
+          std::memcpy(feat_1024 + 128, &in0[0], copy_in0_b0 * sizeof(float));
+        }
       }
 
-      // 3. Top CMIX model consensus predictions (48 dims)
-      const auto& in0 = layers_[0]->Inputs();
-      int copy_in0 = std::min((int)in0.size(), 48);
-      std::memcpy(feat_512 + 464, &in0[0], copy_in0 * sizeof(float));
+      // Block 1 (h1, 256..511): Layer 0 LSTM Recurrent Dynamics
+      const auto& h_lstm = byte_mixers_[0]->Hidden();
+      if (h_lstm.size() > 0) {
+        int copy_l0 = std::min((int)h_lstm.size(), 200);
+        if (copy_l0 > 0) {
+          std::memcpy(feat_1024 + 256, &h_lstm[0], copy_l0 * sizeof(float));
+          for (int j = 0; j < 56 && j < copy_l0; ++j) {
+            feat_1024[256 + 200 + j] = h_lstm[j] * h_lstm[j];
+          }
+        }
+
+        // Block 2 (h2, 512..767): Layer 1 LSTM Semantic & Discourse Horizon
+        if (h_lstm.size() >= 400) {
+          std::memcpy(feat_1024 + 512, &h_lstm[200], 200 * sizeof(float));
+          for (int j = 0; j < 56; ++j) {
+            feat_1024[512 + 200 + j] = h_lstm[200 + j] * h_lstm[200 + j];
+          }
+        } else if (copy_l0 > 0) {
+          std::memcpy(feat_1024 + 512, &h_lstm[0], copy_l0 * sizeof(float));
+        }
+      }
+
+      // Block 3 (h3, 768..1023): Global Consensus Prior & Layer-1 Mixer Representations
+      if (layers_.size() > 1 && layers_[1]->Inputs().size() > 0) {
+        const auto& in1 = layers_[1]->Inputs();
+        int copy_in1 = std::min((int)in1.size(), 128);
+        if (copy_in1 > 0) {
+          std::memcpy(feat_1024 + 768, &in1[0], copy_in1 * sizeof(float));
+        }
+      }
+      if (!layers_.empty() && layers_[0]->Inputs().size() > 128) {
+        const auto& in0 = layers_[0]->Inputs();
+        int copy_in0_b3 = std::min((int)in0.size() - 128, 128);
+        if (copy_in0_b3 > 0) {
+          std::memcpy(feat_1024 + 768 + 128, &in0[128], copy_in0_b3 * sizeof(float));
+        }
+      }
 
       // Causal pairing: Update on observed byte, then compute forward pass for upcoming byte
-      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], feat_512);
+      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], feat_1024);
     }
   }
   for (const auto& byte_mixer : byte_mixers_) {
