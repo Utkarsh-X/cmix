@@ -64,6 +64,9 @@ unsigned long long Predictor::GetNumModels() {
   if (fast_weights_) {
     num += fast_weights_->NumOutputs();
   }
+  if (word_label_) {
+    num += 1;
+  }
   return num;
 }
 
@@ -271,6 +274,9 @@ void Predictor::AddMixers() {
   fast_weights_.reset(new FastWeightsModel(vocab_, 400));
   AddAuxiliary();
 
+  // EXP-164: Online Log-Bilinear Word-Label Neural Model (54,857 words, D=96, trie-structured)
+  word_label_ = std::make_unique<WordLabel>();
+
   for (int i = 0; i < 2; ++i) {
     layers_.push_back(std::unique_ptr<MixerInput>(new MixerInput(sigmoid_,
         1.0e-4)));
@@ -467,6 +473,9 @@ float Predictor::Predict() {
       ++input_index;
     }
   }
+  if (word_label_) {
+    layers_[0]->SetStretchedInput(input_index++, word_label_->Forward());
+  }
   float auxiliary_average = 0;
   for (unsigned int i = 0; i < auxiliary_.size(); ++i) {
     auxiliary_average += Sigmoid::Logistic(layers_[0]->Inputs()[auxiliary_[i]]);
@@ -545,6 +554,9 @@ void Predictor::Perceive(int bit) {
   }
   if (fast_weights_) {
     fast_weights_->Perceive(bit);
+  }
+  if (word_label_) {
+    word_label_->Perceive(bit);
   }
   E2EGrad(bit);
   const unsigned int n0 = (unsigned int)mixers_[0].size();
