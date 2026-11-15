@@ -535,6 +535,10 @@ float Predictor::Predict() {
   uint8_t ctx_s2 = static_cast<uint8_t>(((match_bin & 3) << 2) | (dispute_bin & 3));
 
   p = sse_.Predict(p, ctx_s1, ctx_s2);
+  const int dfa_bit = xml_dfa_.PredictBit(manager_.bit_context_);
+  if (dfa_bit >= 0) {
+    p = (dfa_bit == 1) ? 0.99995f : 0.00005f;
+  }
   float final_p = (byte_mixer_override >= 0) ? (float)byte_mixer_override : p;
   last_p16_ = (unsigned int)(1.0f + 65534.0f * final_p);
   if (byte_mixer_override >= 0) {
@@ -589,6 +593,7 @@ void Predictor::Perceive(int bit) {
 
   manager_.UpdateContexts(bit);
   if (byte_update) {
+    xml_dfa_.Update(static_cast<uint8_t>(manager_.recent_bytes_[0]));
     for (const auto& model : models_) {
       model->ByteUpdate();
     }
