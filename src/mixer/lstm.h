@@ -21,6 +21,7 @@ class Lstm {
   std::valarray<float>& Perceive(unsigned int input);
   std::valarray<float>& Predict(unsigned int input);
   void SetInput(const std::valarray<float>& input);
+  void SetOutputBias(const float* bias) { out_bias_ = bias; }
   const std::valarray<float>& Hidden() const { return hidden_; }
   unsigned int NumCells() const { return num_cells_; }
   unsigned int NumLayers() const { return (unsigned int)layers_.size(); }
@@ -42,6 +43,7 @@ class Lstm {
 #endif
   std::valarray<std::valarray<float>> output_;
   float learning_rate_;
+  const float* out_bias_ = nullptr;
 #ifdef OLR_RAMP
   // position-scheduled output LR (code-dive 2026-07-11): switches from the early
   // value (OUTPUT_LR) to OLR_LATE once olr_bytes_ >= OLR_RAMP. ADDS MEMBERS =>

@@ -12,6 +12,7 @@ class ByteMixer : public ByteModel {
   ByteMixer(unsigned int num_models, const unsigned int& bit_context,
       const std::vector<bool>& vocab, unsigned int vocab_size, Lstm* lstm);
   void SetInput(int index, float val);
+  void SetOutputBias(const float* bias256);
   void ByteUpdate();
   const std::valarray<float>& Hidden() const { return lstm_->Hidden(); }
 
@@ -20,6 +21,7 @@ class ByteMixer : public ByteModel {
   const unsigned int& byte_;
   std::valarray<int> byte_map_;
   std::valarray<float> inputs_;
+  std::valarray<float> folded_bias_;
   unsigned int num_models_, vocab_size_, offset_;
 };
 
