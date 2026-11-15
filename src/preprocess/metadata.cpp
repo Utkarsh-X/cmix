@@ -34,7 +34,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   size_t n_read = fread(&s[0], 1, len, in);
   s.resize(n_read);
 
-  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0;
+  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0, count_wiki = 0;
 
   // 1. Header compaction (EXP-036)
   if ((flags & TRANSFORM_BOILERPLATE) && s.size() >= kMediaWikiHeaderLen &&
@@ -153,8 +153,22 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     }
   }
 
+  // 5. Wikipedia Ref Tags & Comments Compaction (EXP-156)
+  if (flags & TRANSFORM_REF_TAGS) {
+    size_t s_orig = s.size();
+    ReplaceAll(s, "<ref>", "<ref_lit>");
+    ReplaceAll(s, "</ref>", "</ref_lit>");
+    ReplaceAll(s, "<!--", "<c_open_lit>");
+    ReplaceAll(s, "-->", "<c_close_lit>");
+    ReplaceAll(s, "&lt;ref&gt;", "<ref>");
+    ReplaceAll(s, "&lt;/ref&gt;", "</ref>");
+    ReplaceAll(s, "&lt;!--", "<!--");
+    ReplaceAll(s, "--&gt;", "-->");
+    if (s.size() != s_orig) ++count_wiki;
+  }
+
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wiki > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
@@ -400,6 +414,50 @@ bool StreamingDecoder::Fill() {
     if (StartsWith("\n<comment>")) {
       Consume(10);
       PushString("\n      <comment>");
+      return true;
+    }
+  }
+
+  // 6. Wikipedia Ref Tags & Comments Restoration (EXP-156)
+  if (flags_ & TRANSFORM_REF_TAGS) {
+    if (StartsWith("<ref_lit>")) {
+      Consume(9);
+      PushString("<ref>");
+      return true;
+    }
+    if (StartsWith("</ref_lit>")) {
+      Consume(10);
+      PushString("</ref>");
+      return true;
+    }
+    if (StartsWith("<c_open_lit>")) {
+      Consume(12);
+      PushString("<!--");
+      return true;
+    }
+    if (StartsWith("<c_close_lit>")) {
+      Consume(13);
+      PushString("-->");
+      return true;
+    }
+    if (StartsWith("<ref>")) {
+      Consume(5);
+      PushString("&lt;ref&gt;");
+      return true;
+    }
+    if (StartsWith("</ref>")) {
+      Consume(6);
+      PushString("&lt;/ref&gt;");
+      return true;
+    }
+    if (StartsWith("<!--")) {
+      Consume(4);
+      PushString("&lt;!--");
+      return true;
+    }
+    if (StartsWith("-->")) {
+      Consume(3);
+      PushString("--&gt;");
       return true;
     }
   }
