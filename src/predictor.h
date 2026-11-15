@@ -9,6 +9,7 @@
 #include "models/model.h"
 #include "models/byte-model.h"
 #include "models/fast_weights.h"
+#include "models/word_label.h"
 #include "models/ppmd.h"
 #include "context-manager.h"
 #include "char_rate.h"
@@ -61,6 +62,7 @@ class Predictor {
   Sigmoid sigmoid_;
   std::vector<std::unique_ptr<ByteMixer>> byte_mixers_;
   std::unique_ptr<FastWeightsModel> fast_weights_;
+  std::unique_ptr<WordLabel> word_label_;
   PPMD::PPMD* ppmd_ = nullptr;
   const Context* template_context_ = nullptr;
   const Context* table_context_ = nullptr;
