@@ -95,8 +95,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   if (flags & TRANSFORM_PAGE_IDS) {
     size_t pos = 0;
     unsigned long long prev_id = 0;
-    unsigned long long last_b1_pid = 0;
-    unsigned long long last_b1_rid = 0;
+    b1_interp::Interp b1_interp;
 
     while ((pos = s.find("</title>", pos)) != std::string::npos) {
       size_t ws_start = pos + 8;
@@ -132,10 +131,9 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
               if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
                 unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
                 if (revid < 17000000ULL) {
-                  unsigned long long forecast = (last_b1_pid == 0) ? 15898943ULL : (last_b1_rid + (curr_id - last_b1_pid));
-                  long long res = static_cast<long long>(revid) - static_cast<long long>(forecast);
-                  last_b1_pid = curr_id;
-                  last_b1_rid = revid;
+                  long long forecast = b1_interp.Prognose(curr_id);
+                  long long res = static_cast<long long>(revid) - forecast;
+                  b1_interp.Add(curr_id, revid);
                   std::string rev_repl;
                   if (res == 0) rev_repl = "+";
                   else rev_repl = "+" + std::to_string(res);
@@ -172,7 +170,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
-    : dict_(dict), in_(in), flags_(flags), prev_id_(0), last_b1_pid_(0), last_b1_rid_(0), first_byte_(true), eof_(false) {}
+    : dict_(dict), in_(in), flags_(flags), prev_id_(0), first_byte_(true), eof_(false) {}
 
 int StreamingDecoder::GetByte() {
   while (buf_.empty()) {
@@ -275,10 +273,9 @@ bool StreamingDecoder::Fill() {
         for (size_t i = 16; i < end_tag; ++i) res_str += window_[i];
         res = std::stoll(res_str);
       }
-      unsigned long long forecast = (last_b1_pid_ == 0) ? 15898943ULL : (last_b1_rid_ + (prev_id_ - last_b1_pid_));
-      unsigned long long revid = forecast + res;
-      last_b1_pid_ = prev_id_;
-      last_b1_rid_ = revid;
+      long long forecast = b1_interp_.Prognose(prev_id_);
+      unsigned long long revid = static_cast<unsigned long long>(forecast + res);
+      b1_interp_.Add(prev_id_, revid);
 
       PushString("\n    <revision>\n      <id>");
       PushString(std::to_string(revid));

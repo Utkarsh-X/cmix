@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <deque>
 #include <string>
+#include "b1_interp.h"
 
 namespace preprocessor {
 class Dictionary;
@@ -45,8 +46,7 @@ class StreamingDecoder {
   FILE* in_;
   int flags_;
   unsigned long long prev_id_;
-  unsigned long long last_b1_pid_;
-  unsigned long long last_b1_rid_;
+  b1_interp::Interp b1_interp_;
   bool first_byte_;
   bool eof_;
   std::deque<char> window_;
