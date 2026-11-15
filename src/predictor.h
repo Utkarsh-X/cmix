@@ -69,6 +69,7 @@ class Predictor {
   const Context* namespace_context_ = nullptr;
   std::vector<bool> vocab_;
   unsigned int last_p16_ = 32768;
+  uint64_t byte_count_ = 0;
 };
 
 #endif

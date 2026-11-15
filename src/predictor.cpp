@@ -581,6 +581,7 @@ void Predictor::Perceive(int bit) {
 
   manager_.UpdateContexts(bit);
   if (byte_update) {
+    ++byte_count_;
     for (const auto& model : models_) {
       model->ByteUpdate();
     }
@@ -596,7 +597,7 @@ void Predictor::Perceive(int bit) {
       }
       if (i == 0 && !byte_mixers_.empty()) {
         float obias_row[256];
-        ppm_logit_prior::Row(&p[0], obias_row);
+        ppm_logit_prior::Row(&p[0], obias_row, byte_count_);
         for (const auto& byte_mixer : byte_mixers_) {
           byte_mixer->SetOutputBias(obias_row);
         }

@@ -14,14 +14,20 @@
 // learns the residual against PPMd. The factor g is fixed here (kGate).
 namespace ppm_logit_prior {
 
-static constexpr float kGate  = 550 / 1000.0f; // 0.55
-static constexpr float kFloor = 1e-6f;
-static constexpr float kLn2   = 0.69314718055994531f;
+static constexpr float kGateInit  = 550 / 1000.0f; // 0.550
+static constexpr float kGateFloor = 220 / 1000.0f; // 0.220
+static constexpr float kTau       = 45000.0f;      // 45 KB scale
+static constexpr float kFloor     = 1e-6f;
+static constexpr float kLn2       = 0.69314718055994531f;
 
-// bias256[i] = g * ln(max(p256[i], 1e-6)) for all 256 byte values.
+inline float GateForPos(uint64_t byte_pos) {
+  return kGateFloor + (kGateInit - kGateFloor) * expf(-static_cast<float>(byte_pos) / kTau);
+}
+
+// bias256[i] = g(t) * ln(max(p256[i], 1e-6)) for all 256 byte values.
 // The caller folds the row onto the vocabulary positions.
-inline void Row(const float* p256, float* bias256) {
-  const float kG = kGate;
+inline void Row(const float* p256, float* bias256, uint64_t byte_pos = 0) {
+  const float kG = GateForPos(byte_pos);
   for (int i = 0; i < 256; ++i) {
     float pv = p256[i];
     if (!(pv > kFloor)) pv = kFloor;   // clamps 0, subnormals and NaN
