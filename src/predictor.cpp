@@ -9,6 +9,7 @@
 #include "models/paq8.h"
 #include "models/fxcmv1.h"
 #include "mixer/lstm.h"
+#include "ppm_logit_prior.h"
 #include "contexts/context-hash.h"
 #include "contexts/bracket-context.h"
 #include "contexts/sparse.h"
@@ -591,6 +592,13 @@ void Predictor::Perceive(int bit) {
       for (const auto& byte_mixer : byte_mixers_) {
         for (unsigned int j = 0; j < 256; ++j) {
           byte_mixer->SetInput(j, p[j]);
+        }
+      }
+      if (i == 0 && !byte_mixers_.empty()) {
+        float obias_row[256];
+        ppm_logit_prior::Row(&p[0], obias_row);
+        for (const auto& byte_mixer : byte_mixers_) {
+          byte_mixer->SetOutputBias(obias_row);
         }
       }
     }

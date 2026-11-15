@@ -285,6 +285,7 @@ inline std::valarray<float>& Lstm::Predict(unsigned int input) {
     float sum = 0;
     for (unsigned int j = 0; j < hidden_.size(); ++j)
       sum += hidden_[j] * output_layer_[epoch_][i][j];
+    if (out_bias_ != nullptr) sum += out_bias_[i];
     output_[epoch_][i] = LSTM_EXPF(sum);
   }
 #else
@@ -292,6 +293,7 @@ inline std::valarray<float>& Lstm::Predict(unsigned int input) {
     const unsigned int HS = (unsigned int)hidden_.size();
     const float* __restrict hp = &hidden_[0];
     float* __restrict op = &output_[epoch_][0];
+    const float* const ob = out_bias_;
     unsigned int i = 0;
     for (; i + 7 < output_size_; i += 8) {
       const float* __restrict w0 = &output_w_[i][0];
@@ -308,6 +310,10 @@ inline std::valarray<float>& Lstm::Predict(unsigned int input) {
         s0 += h * w0[j]; s1 += h * w1[j]; s2 += h * w2[j]; s3 += h * w3[j];
         s4 += h * w4[j]; s5 += h * w5[j]; s6 += h * w6[j]; s7 += h * w7[j];
       }
+      if (ob != nullptr) {
+        s0 += ob[i];   s1 += ob[i+1]; s2 += ob[i+2]; s3 += ob[i+3];
+        s4 += ob[i+4]; s5 += ob[i+5]; s6 += ob[i+6]; s7 += ob[i+7];
+      }
       op[i]   = LSTM_EXPF(s0); op[i+1] = LSTM_EXPF(s1);
       op[i+2] = LSTM_EXPF(s2); op[i+3] = LSTM_EXPF(s3);
       op[i+4] = LSTM_EXPF(s4); op[i+5] = LSTM_EXPF(s5);
@@ -317,6 +323,7 @@ inline std::valarray<float>& Lstm::Predict(unsigned int input) {
       const float* __restrict w = &output_w_[i][0];
       float sum = 0;
       for (unsigned int j = 0; j < HS; ++j) sum += hp[j] * w[j];
+      if (ob != nullptr) sum += ob[i];
       op[i] = LSTM_EXPF(sum);
     }
   }
