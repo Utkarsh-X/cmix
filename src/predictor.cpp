@@ -267,8 +267,8 @@ void Predictor::AddMixers() {
       vocab_size, new Lstm(vocab_size, vocab_size, 200, 2, 100, 0.03, 10)));
   AddAuxiliary();
 
-  // EXP-091: Dual-Layer Fast-Weights Associative Memory (LSTM L0 + L1 = 400 dims)
-  fast_weights_.reset(new FastWeightsModel(vocab_, 400));
+  // EXP-167: FW-DUAL Multi-Scale Associative Memory (512 dimensions)
+  fast_weights_.reset(new FastWeightsModel(vocab_, 512));
   AddAuxiliary();
 
   for (int i = 0; i < 2; ++i) {
@@ -428,6 +428,9 @@ void Predictor::AddMixers() {
   layers_[1]->SetNumModels(input_size);
   AddMixer(1, manager_.zero_context_, 0.0003);
   mixers_[1][0]->E2ESeedHead(mixers_[0].size(), 1.0f / (float)mixers_[0].size());
+  // EXP-167: Un-muffle Fast-Weights in Layer-1 final mixer with 0.15f active prior
+  unsigned int fw_aux_slot = mixers_[0].size() + (auxiliary_.size() - 1);
+  mixers_[1][0]->E2ESeedHead(fw_aux_slot + 1, 0.15f);
   AddMixer(1, manager_.longest_match_regime_, 0.00015);
 }
 
@@ -595,9 +598,27 @@ void Predictor::Perceive(int bit) {
       byte_mixer->ByteUpdate();
     }
     if (fast_weights_ && !byte_mixers_.empty()) {
-      const auto& h = byte_mixers_[0]->Hidden();
-      const float* h_ptr = &h[0];
-      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], h_ptr);
+      // Assemble 512-dimensional multi-scale feature vector:
+      alignas(32) float feat_512[512] = {0.0f};
+
+      // 1. Recurrent LSTM hidden states L0 + L1 (400 dims)
+      const auto& h_lstm = byte_mixers_[0]->Hidden();
+      int copy_lstm = std::min((int)h_lstm.size(), 400);
+      std::memcpy(feat_512, &h_lstm[0], copy_lstm * sizeof(float));
+
+      // 2. Local character context n-gram embeddings (64 dims)
+      for (int k = 0; k < 8; ++k) {
+        uint8_t b = (uint8_t)manager_.recent_bytes_[k];
+        feat_512[400 + k * 8 + (b & 7)] = 1.0f;
+      }
+
+      // 3. Top CMIX model consensus predictions (48 dims)
+      const auto& in0 = layers_[0]->Inputs();
+      int copy_in0 = std::min((int)in0.size(), 48);
+      std::memcpy(feat_512 + 464, &in0[0], copy_in0 * sizeof(float));
+
+      // Causal pairing: Update on observed byte, then compute forward pass for upcoming byte
+      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], feat_512);
     }
   }
   for (const auto& byte_mixer : byte_mixers_) {
