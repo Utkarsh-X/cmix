@@ -21,10 +21,21 @@ const unsigned char kLt = 0x02;
 const char* kLtStr = "&lt;";
 const unsigned char kGt = 0x03;
 const char* kGtStr = "&gt;";
+const unsigned char kApos = 0x04;
+const char* kAposStr = "&apos;";
+const unsigned char kNbsp = 0x05;
+const char* kNbspStr = "&nbsp;";
+const unsigned char kDec039 = 0x0E;
+const char* kDec039Str = "&#039;";
+
+inline bool IsControlByte(unsigned char c) {
+  return c == kEndUpper || c == kEscape || c == kUppercase ||
+         c == kCapitalized || c == kQuote || c == kAmp || c == kLt || c == kGt ||
+         c == kApos || c == kNbsp || c == kDec039 || c >= 0x80;
+}
 
 void EncodeByte(unsigned char c, FILE* output) {
-  if (c == kEndUpper || c == kEscape || c == kUppercase ||
-      c == kCapitalized || c == kQuote || c == kAmp || c == kLt || c == kGt || c >= 0x80) {
+  if (IsControlByte(c)) {
     putc(kEscape, output);
   }
   putc(c, output);
@@ -190,39 +201,122 @@ Dictionary::Dictionary(FILE* dictionary, bool encode, bool decode) {
   }
 }
 
+class LookaheadStream {
+ public:
+  LookaheadStream(FILE* in, int len)
+      : in_(in), len_(len), pos_(0), head_(0), count_(0) {}
+
+  inline bool eof() const {
+    return count_ == 0 && pos_ >= len_;
+  }
+
+  inline int Get() {
+    if (count_ > 0) {
+      int c = buf_[head_];
+      head_ = (head_ + 1) % kBufSize;
+      --count_;
+      return c;
+    }
+    if (pos_ >= len_) return EOF;
+    ++pos_;
+    return getc(in_);
+  }
+
+  inline int Peek(unsigned char* out, int n) {
+    while (count_ < n && pos_ < len_) {
+      int c = getc(in_);
+      if (c == EOF) break;
+      ++pos_;
+      buf_[(head_ + count_) % kBufSize] = static_cast<unsigned char>(c);
+      ++count_;
+    }
+    int avail = (count_ < n) ? count_ : n;
+    for (int i = 0; i < avail; ++i) {
+      out[i] = buf_[(head_ + i) % kBufSize];
+    }
+    return avail;
+  }
+
+  inline void Consume(int n) {
+    if (n > count_) n = count_;
+    head_ = (head_ + n) % kBufSize;
+    count_ -= n;
+  }
+
+ private:
+  static const int kBufSize = 16;
+  FILE* in_;
+  int len_;
+  int pos_;
+  unsigned char buf_[kBufSize];
+  int head_;
+  int count_;
+};
+
 void Dictionary::Encode(FILE* input, int len, FILE* output) {
+  LookaheadStream stream(input, len);
   std::string word;
   int num_upper = 0, num_lower = 0;
-  bool after_amp = false;
-  for (int pos = 0; pos < len; ++pos) {
-    unsigned char c = getc(input);
-    if (c == ';' && after_amp && num_upper == 0) {
-      if (word == "quot") {
-        putc(kQuote, output);
-        num_lower = 0;
-        word.clear();
-        after_amp = false;
-        continue;
-      } else if (word == "amp") {
-        putc(kAmp, output);
-        num_lower = 0;
-        word.clear();
-        after_amp = false;
-        continue;
-      } else if (word == "lt") {
-        putc(kLt, output);
-        num_lower = 0;
-        word.clear();
-        after_amp = false;
-        continue;
-      } else if (word == "gt") {
-        putc(kGt, output);
-        num_lower = 0;
-        word.clear();
-        after_amp = false;
-        continue;
-      }
+
+  auto try_encode_entity = [&](FILE* out) -> bool {
+    unsigned char peek[8];
+    int avail = stream.Peek(peek, 6);
+    if (avail >= 5 && memcmp(peek, "quot;", 5) == 0) {
+      stream.Consume(5);
+      putc(kQuote, out);
+      return true;
     }
+    if (avail >= 4 && memcmp(peek, "amp;", 4) == 0) {
+      stream.Consume(4);
+      putc(kAmp, out);
+      return true;
+    }
+    if (avail >= 3 && memcmp(peek, "lt;", 3) == 0) {
+      stream.Consume(3);
+      putc(kLt, out);
+      return true;
+    }
+    if (avail >= 3 && memcmp(peek, "gt;", 3) == 0) {
+      stream.Consume(3);
+      putc(kGt, out);
+      return true;
+    }
+    if (avail >= 5 && memcmp(peek, "apos;", 5) == 0) {
+      stream.Consume(5);
+      putc(kApos, out);
+      return true;
+    }
+    if (avail >= 5 && memcmp(peek, "nbsp;", 5) == 0) {
+      stream.Consume(5);
+      putc(kNbsp, out);
+      return true;
+    }
+    if (avail >= 5 && memcmp(peek, "#039;", 5) == 0) {
+      stream.Consume(5);
+      putc(kDec039, out);
+      return true;
+    }
+    return false;
+  };
+
+  while (!stream.eof()) {
+    int in_c = stream.Get();
+    if (in_c == EOF) break;
+    unsigned char c = static_cast<unsigned char>(in_c);
+
+    if (c == '&') {
+      if (!word.empty()) {
+        EncodeWord(word, num_upper, false, output);
+        num_lower = 0;
+        num_upper = 0;
+        word.clear();
+      }
+      if (!try_encode_entity(output)) {
+        EncodeByte('&', output);
+      }
+      continue;
+    }
+
     bool advance = false;
     if (word.size() > longest_word_) {
       advance = true;
@@ -243,13 +337,12 @@ void Dictionary::Encode(FILE* input, int len, FILE* output) {
     } else {
       advance = true;
     }
-    if (pos == len - 1 && !advance) {
+    if (stream.eof() && !advance) {
       EncodeWord(word, num_upper, false, output);
     }
     if (advance) {
       if (word.empty()) {
         EncodeByte(c, output);
-        after_amp = (c == '&');
       } else {
         bool next_lower = (c >= 'a' && c <= 'z');
         EncodeWord(word, num_upper, next_lower, output);
@@ -259,20 +352,26 @@ void Dictionary::Encode(FILE* input, int len, FILE* output) {
         if (next_lower) {
           ++num_lower;
           word += c;
-          after_amp = false;
         } else if (c >= 'A' && c <= 'Z') {
           ++num_upper;
           word += (c - 'A' + 'a');
-          after_amp = false;
         } else {
-          EncodeByte(c, output);
-          after_amp = (c == '&');
+          if (c == '&') {
+            if (!try_encode_entity(output)) {
+              EncodeByte('&', output);
+            }
+          } else {
+            EncodeByte(c, output);
+          }
         }
-        if (pos == len - 1 && !word.empty()) {
+        if (stream.eof() && !word.empty()) {
           EncodeWord(word, num_upper, false, output);
         }
       }
     }
+  }
+  if (!word.empty()) {
+    EncodeWord(word, num_upper, false, output);
   }
 }
 
@@ -344,20 +443,46 @@ bool Dictionary::AddToBuffer(FILE* input) {
       PushBuf(static_cast<unsigned char>(next_c));
     }
   } else if (c == kQuote) {
-    for (int i = 1; i < 6; ++i) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 6; ++i) {
       PushBuf(kQuoteStr[i]);
     }
   } else if (c == kAmp) {
-    for (int i = 1; i < 5; ++i) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 5; ++i) {
       PushBuf(kAmpStr[i]);
     }
   } else if (c == kLt) {
-    for (int i = 1; i < 4; ++i) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 4; ++i) {
       PushBuf(kLtStr[i]);
     }
   } else if (c == kGt) {
-    for (int i = 1; i < 4; ++i) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 4; ++i) {
       PushBuf(kGtStr[i]);
+    }
+  } else if (c == kApos) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 6; ++i) {
+      PushBuf(kAposStr[i]);
+    }
+  } else if (c == kNbsp) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 6; ++i) {
+      PushBuf(kNbspStr[i]);
+    }
+  } else if (c == kDec039) {
+    decode_upper_ = false;
+    decode_capital_ = false;
+    for (int i = 0; i < 6; ++i) {
+      PushBuf(kDec039Str[i]);
     }
   } else if (c == kUppercase) {
     decode_upper_ = true;
