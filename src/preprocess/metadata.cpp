@@ -26,6 +26,32 @@ void ReplaceAll(std::string& str, const std::string& from, const std::string& to
   }
 }
 
+struct WikitextRule {
+  const char* pattern;
+  size_t len;
+  char token;
+};
+
+const WikitextRule kWikitextRules[] = {
+  {"http://www.", 11, 0x0B},
+  {"http://", 7, 0x0E},
+  {"[[Category:", 11, 0x04},
+  {"[[Image:", 8, 0x05},
+  {"[[", 2, 0x0F},
+  {"]]", 2, 0x10},
+  {"{{", 2, 0x11},
+  {"}}", 2, 0x12},
+  {"'''", 3, 0x13},
+  {"''", 2, 0x14},
+};
+const size_t kNumWikitextRules = sizeof(kWikitextRules) / sizeof(kWikitextRules[0]);
+const char kEscapeByte = 0x1F;
+
+inline bool IsWikitextToken(char c) {
+  return c == 0x04 || c == 0x05 || c == 0x0B || c == 0x0E || c == 0x0F ||
+         c == 0x10 || c == 0x11 || c == 0x12 || c == 0x13 || c == 0x14 || c == kEscapeByte;
+}
+
 }  // namespace
 
 bool Transform(FILE* in, int len, FILE* out, int flags) {
@@ -153,8 +179,41 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     }
   }
 
+  // 4. Wikitext AST & Syntax Compaction (EXP-171)
+  int count_wiki = 0;
+  if (flags & TRANSFORM_WIKITEXT) {
+    std::string wikitext_out;
+    wikitext_out.reserve(s.size());
+    size_t i = 0;
+    const size_t n = s.size();
+    while (i < n) {
+      bool matched = false;
+      for (size_t r = 0; r < kNumWikitextRules; ++r) {
+        size_t l = kWikitextRules[r].len;
+        if (i + l <= n && memcmp(&s[i], kWikitextRules[r].pattern, l) == 0) {
+          wikitext_out.push_back(kWikitextRules[r].token);
+          i += l;
+          matched = true;
+          ++count_wiki;
+          break;
+        }
+      }
+      if (!matched) {
+        char b = s[i];
+        if (IsWikitextToken(b)) {
+          wikitext_out.push_back(kEscapeByte);
+          wikitext_out.push_back(b);
+        } else {
+          wikitext_out.push_back(b);
+        }
+        ++i;
+      }
+    }
+    s = std::move(wikitext_out);
+  }
+
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wiki > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
@@ -401,6 +460,27 @@ bool StreamingDecoder::Fill() {
       Consume(10);
       PushString("\n      <comment>");
       return true;
+    }
+  }
+
+  // 6. Wikitext Syntax Reconstruction (EXP-171)
+  if (flags_ & TRANSFORM_WIKITEXT) {
+    char front_c = window_.front();
+    if (front_c == kEscapeByte) {
+      if (window_.size() < 2 && !eof_) return true; // Wait for escaped byte
+      Consume(1);
+      if (!window_.empty()) {
+        buf_.push_back(static_cast<unsigned char>(window_.front()));
+        window_.pop_front();
+      }
+      return true;
+    }
+    for (size_t r = 0; r < kNumWikitextRules; ++r) {
+      if (front_c == kWikitextRules[r].token) {
+        Consume(1);
+        PushString(kWikitextRules[r].pattern);
+        return true;
+      }
     }
   }
 
