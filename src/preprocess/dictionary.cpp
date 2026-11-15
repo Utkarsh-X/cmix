@@ -30,6 +30,51 @@ void EncodeByte(unsigned char c, FILE* output) {
   putc(c, output);
 }
 
+void EncodeUTF8OrByte(unsigned char c, FILE* input, int& pos, int len, FILE* output) {
+  if (c >= 0xC2 && c <= 0xDF && pos + 1 < len) {
+    int c2 = getc(input);
+    if (c2 != EOF && (c2 & 0xC0) == 0x80) {
+      ++pos;
+      putc(kEscape, output);
+      putc(c, output);
+      putc(static_cast<unsigned char>(c2), output);
+      return;
+    }
+    if (c2 != EOF) ungetc(c2, input);
+  } else if (c >= 0xE0 && c <= 0xEF && pos + 2 < len) {
+    int c2 = getc(input);
+    int c3 = (c2 != EOF) ? getc(input) : EOF;
+    if (c2 != EOF && c3 != EOF && (c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80) {
+      pos += 2;
+      putc(kEscape, output);
+      putc(c, output);
+      putc(static_cast<unsigned char>(c2), output);
+      putc(static_cast<unsigned char>(c3), output);
+      return;
+    }
+    if (c3 != EOF) ungetc(c3, input);
+    if (c2 != EOF) ungetc(c2, input);
+  } else if (c >= 0xF0 && c <= 0xF4 && pos + 3 < len) {
+    int c2 = getc(input);
+    int c3 = (c2 != EOF) ? getc(input) : EOF;
+    int c4 = (c3 != EOF) ? getc(input) : EOF;
+    if (c2 != EOF && c3 != EOF && c4 != EOF &&
+        (c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80 && (c4 & 0xC0) == 0x80) {
+      pos += 3;
+      putc(kEscape, output);
+      putc(c, output);
+      putc(static_cast<unsigned char>(c2), output);
+      putc(static_cast<unsigned char>(c3), output);
+      putc(static_cast<unsigned char>(c4), output);
+      return;
+    }
+    if (c4 != EOF) ungetc(c4, input);
+    if (c3 != EOF) ungetc(c3, input);
+    if (c2 != EOF) ungetc(c2, input);
+  }
+  EncodeByte(c, output);
+}
+
 void EncodeBytes(unsigned int bytes, FILE* output) {
   putc((unsigned char)(bytes & 0xFF), output);
   if (bytes & 0xFF00) {
@@ -248,7 +293,7 @@ void Dictionary::Encode(FILE* input, int len, FILE* output) {
     }
     if (advance) {
       if (word.empty()) {
-        EncodeByte(c, output);
+        EncodeUTF8OrByte(c, input, pos, len, output);
         after_amp = (c == '&');
       } else {
         bool next_lower = (c >= 'a' && c <= 'z');
@@ -265,7 +310,7 @@ void Dictionary::Encode(FILE* input, int len, FILE* output) {
           word += (c - 'A' + 'a');
           after_amp = false;
         } else {
-          EncodeByte(c, output);
+          EncodeUTF8OrByte(c, input, pos, len, output);
           after_amp = (c == '&');
         }
         if (pos == len - 1 && !word.empty()) {
@@ -341,7 +386,60 @@ bool Dictionary::AddToBuffer(FILE* input) {
     decode_upper_ = false;
     int next_c = getc(input);
     if (next_c != EOF) {
-      PushBuf(static_cast<unsigned char>(next_c));
+      unsigned char nc = static_cast<unsigned char>(next_c);
+      PushBuf(nc);
+      if (nc >= 0xC2 && nc <= 0xDF) {
+        int c2 = getc(input);
+        if (c2 != EOF) {
+          if ((c2 & 0xC0) == 0x80) {
+            PushBuf(static_cast<unsigned char>(c2));
+          } else {
+            ungetc(c2, input);
+          }
+        }
+      } else if (nc >= 0xE0 && nc <= 0xEF) {
+        int c2 = getc(input);
+        if (c2 != EOF) {
+          if ((c2 & 0xC0) == 0x80) {
+            PushBuf(static_cast<unsigned char>(c2));
+            int c3 = getc(input);
+            if (c3 != EOF) {
+              if ((c3 & 0xC0) == 0x80) {
+                PushBuf(static_cast<unsigned char>(c3));
+              } else {
+                ungetc(c3, input);
+              }
+            }
+          } else {
+            ungetc(c2, input);
+          }
+        }
+      } else if (nc >= 0xF0 && nc <= 0xF4) {
+        int c2 = getc(input);
+        if (c2 != EOF) {
+          if ((c2 & 0xC0) == 0x80) {
+            PushBuf(static_cast<unsigned char>(c2));
+            int c3 = getc(input);
+            if (c3 != EOF) {
+              if ((c3 & 0xC0) == 0x80) {
+                PushBuf(static_cast<unsigned char>(c3));
+                int c4 = getc(input);
+                if (c4 != EOF) {
+                  if ((c4 & 0xC0) == 0x80) {
+                    PushBuf(static_cast<unsigned char>(c4));
+                  } else {
+                    ungetc(c4, input);
+                  }
+                }
+              } else {
+                ungetc(c3, input);
+              }
+            }
+          } else {
+            ungetc(c2, input);
+          }
+        }
+      }
     }
   } else if (c == kQuote) {
     for (int i = 1; i < 6; ++i) {
