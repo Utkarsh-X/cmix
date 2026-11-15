@@ -34,6 +34,7 @@ class Predictor {
       float learning_rate);
   void AddByteMixer(ByteMixer* byte_mixer);
   void AddAuxiliary();
+  void AddAuxiliary(unsigned int index);
   void AddPAQ8();
   void AddFXCM();
   void AddPPMD();
