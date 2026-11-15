@@ -34,7 +34,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   size_t n_read = fread(&s[0], 1, len, in);
   s.resize(n_read);
 
-  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0, count_wiki = 0;
+  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0, count_wiki = 0, count_redir = 0;
 
   // 1. Header compaction (EXP-036)
   if ((flags & TRANSFORM_BOILERPLATE) && s.size() >= kMediaWikiHeaderLen &&
@@ -46,6 +46,21 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   // 2. XML Boilerplate & Inter-page transition (EXP-035, EXP-038, EXP-039)
   if (flags & TRANSFORM_BOILERPLATE) {
     ReplaceAll(s, "<text>", "<text_lit>");
+
+    // EXP-159: Wikipedia Redirect Boilerplate Compaction
+    if (flags & TRANSFORM_REDIRECTS) {
+      size_t s_before_redir = s.size();
+      // Non-redirect starting with [[ protection
+      ReplaceAll(s, "\n      <text xml:space=\"preserve\">[[", "<text_bracket>[[");
+      ReplaceAll(s, "<text xml:space=\"preserve\">[[", "<text_bracket_fallback>[[");
+
+      // Redirect compaction: compacts \n      <text xml:space="preserve">#REDIRECT [[ -> <text>[[
+      ReplaceAll(s, "\n      <text xml:space=\"preserve\">#REDIRECT [[", "<text>[[");
+      ReplaceAll(s, "<text xml:space=\"preserve\">#REDIRECT [[", "<text_fallback>[[");
+      ReplaceAll(s, "\n      <text xml:space=\"preserve\">#REDIRECT [", "<text>[");
+      if (s.size() != s_before_redir) ++count_redir;
+    }
+
     // EXP-039: Strip \n      indentation before <text xml:space="preserve">
     ReplaceAll(s, "\n      <text xml:space=\"preserve\">", "<text>");
     ReplaceAll(s, "<text xml:space=\"preserve\">", "<text_fallback>");
@@ -166,7 +181,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   }
 
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wiki > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wiki > 0 || count_redir > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
@@ -337,6 +352,34 @@ bool StreamingDecoder::Fill() {
       Consume(21);
       PushString("</text>\n    </revision>\n  </page>\n  <page>\n    <title>");
       return true;
+    }
+    // EXP-159: Wikipedia Redirect Boilerplate Restoration
+    if (flags_ & TRANSFORM_REDIRECTS) {
+      if (StartsWith("<text_bracket>[[")) {
+        Consume(16);
+        PushString("\n      <text xml:space=\"preserve\">[[");
+        return true;
+      }
+      if (StartsWith("<text_bracket_fallback>[[")) {
+        Consume(25);
+        PushString("<text xml:space=\"preserve\">[[");
+        return true;
+      }
+      if (StartsWith("<text>[[")) {
+        Consume(8);
+        PushString("\n      <text xml:space=\"preserve\">#REDIRECT [[");
+        return true;
+      }
+      if (StartsWith("<text_fallback>[[")) {
+        Consume(17);
+        PushString("<text xml:space=\"preserve\">#REDIRECT [[");
+        return true;
+      }
+      if (StartsWith("<text>[")) {
+        Consume(7);
+        PushString("\n      <text xml:space=\"preserve\">#REDIRECT [");
+        return true;
+      }
     }
     // EXP-039: Compact <text> restores \n      <text xml:space="preserve">
     if (StartsWith("<text>")) {
