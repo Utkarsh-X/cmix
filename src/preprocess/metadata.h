@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <deque>
 #include <string>
+#include <unordered_map>
 
 namespace preprocessor {
 class Dictionary;
@@ -17,7 +18,8 @@ enum TransformFlags {
   TRANSFORM_TIMESTAMPS = 2,
   TRANSFORM_BOILERPLATE = 4,
   TRANSFORM_REV_IDS = 8,
-  TRANSFORM_ALL = (TRANSFORM_PAGE_IDS | TRANSFORM_TIMESTAMPS | TRANSFORM_BOILERPLATE | TRANSFORM_REV_IDS)
+  TRANSFORM_CONTRIBUTOR_UID = 16,
+  TRANSFORM_ALL = (TRANSFORM_PAGE_IDS | TRANSFORM_TIMESTAMPS | TRANSFORM_BOILERPLATE | TRANSFORM_REV_IDS | TRANSFORM_CONTRIBUTOR_UID)
 };
 
 // Transforms Wikipedia Metadata (Header compaction, Page-ID deltas, B1 Rev-ID forecast, compact timestamps, and boilerplate tags).
@@ -50,6 +52,7 @@ class StreamingDecoder {
   bool eof_;
   std::deque<char> window_;
   std::deque<int> buf_;
+  std::unordered_map<std::string, std::string> seen_users_;
 };
 
 }  // namespace metadata

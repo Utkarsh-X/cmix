@@ -153,8 +153,50 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     }
   }
 
+  // 5. Contributor User-ID Deduplication (EXP-175)
+  int count_cuid = 0;
+  if (flags & TRANSFORM_CONTRIBUTOR_UID) {
+    std::unordered_map<std::string, std::string> seen_users;
+    std::string cuid_out;
+    cuid_out.reserve(s.size());
+    size_t i = 0;
+    const size_t n = s.size();
+    const std::string tag_u_open = "<username>";
+    const std::string tag_u_close = "</username><id>";
+    const std::string tag_id_close = "</id></contributor>";
+
+    while (i < n) {
+      if (i + tag_u_open.size() <= n && memcmp(&s[i], tag_u_open.data(), tag_u_open.size()) == 0) {
+        size_t u_start = i + tag_u_open.size();
+        size_t u_close = s.find(tag_u_close, u_start);
+        if (u_close != std::string::npos && u_close - u_start < 256) {
+          size_t id_start = u_close + tag_u_close.size();
+          size_t id_close = s.find(tag_id_close, id_start);
+          if (id_close != std::string::npos && id_close - id_start < 32) {
+            std::string uname = s.substr(u_start, u_close - u_start);
+            std::string uid = s.substr(id_start, id_close - id_start);
+            cuid_out.append(s, i, id_start - i);
+            auto it = seen_users.find(uname);
+            if (it != seen_users.end() && it->second == uid) {
+              cuid_out.push_back('+');  // Deduplicate redundant UID
+              ++count_cuid;
+            } else {
+              seen_users[uname] = uid;
+              cuid_out.append(uid);
+            }
+            cuid_out.append(tag_id_close);
+            i = id_close + tag_id_close.size();
+            continue;
+          }
+        }
+      }
+      cuid_out.push_back(s[i++]);
+    }
+    s = std::move(cuid_out);
+  }
+
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_cuid > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
@@ -175,7 +217,7 @@ bool StreamingDecoder::Fill() {
     return getc(in_);
   };
 
-  while (window_.size() < 48 && !eof_) {
+  while (window_.size() < 256 && !eof_) {
     int c = next_byte();
     if (c == EOF) {
       eof_ = true;
@@ -359,6 +401,39 @@ bool StreamingDecoder::Fill() {
       PushString("</username>\n        <id>");
       return true;
     }
+    // EXP-175: Contributor User-ID Deduplication
+    if ((flags_ & TRANSFORM_CONTRIBUTOR_UID) && StartsWith("<username>")) {
+      std::string win_str(window_.begin(), window_.end());
+      size_t u_close = win_str.find("</username><id>");
+      if (u_close != std::string::npos && u_close >= 10) {
+        size_t id_start = u_close + 15;
+        size_t id_close = win_str.find("</id></contributor>", id_start);
+        if (id_close != std::string::npos) {
+          std::string uname = win_str.substr(10, u_close - 10);
+          std::string uid = win_str.substr(id_start, id_close - id_start);
+          Consume(id_close + 19);
+
+          std::string actual_uid;
+          if (uid == "+") {
+            auto it = seen_users_.find(uname);
+            if (it != seen_users_.end()) {
+              actual_uid = it->second;
+            } else {
+              actual_uid = "0";
+            }
+          } else {
+            seen_users_[uname] = uid;
+            actual_uid = uid;
+          }
+
+          PushString("\n      <contributor>\n        <username>" + uname +
+                     "</username>\n        <id>" + actual_uid +
+                     "</id>\n      </contributor>");
+          return true;
+        }
+      }
+    }
+
     // EXP-045: Compact schema tokens (without leading newline)
     if (StartsWith("<username>")) {
       Consume(10);
