@@ -34,7 +34,7 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
   size_t n_read = fread(&s[0], 1, len, in);
   s.resize(n_read);
 
-  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0, count_wiki = 0, count_redir = 0;
+  int count_id = 0, count_ts = 0, count_bp = 0, count_rev = 0, count_wiki = 0, count_redir = 0, count_url = 0;
 
   // 1. Header compaction (EXP-036)
   if ((flags & TRANSFORM_BOILERPLATE) && s.size() >= kMediaWikiHeaderLen &&
@@ -180,8 +180,18 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     if (s.size() != s_orig) ++count_wiki;
   }
 
+  // 6. External URL Compaction (EXP-160)
+  if (flags & TRANSFORM_URLS) {
+    size_t s_orig = s.size();
+    ReplaceAll(s, "[www.", "[www_lit.");
+    ReplaceAll(s, "[//", "[slash_lit.");
+    ReplaceAll(s, "[http://www.", "[www.");
+    ReplaceAll(s, "[http://", "[//");
+    if (s.size() != s_orig) ++count_url;
+  }
+
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wiki > 0 || count_redir > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wiki > 0 || count_redir > 0 || count_url > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
@@ -498,6 +508,30 @@ bool StreamingDecoder::Fill() {
     if (StartsWith("-->")) {
       Consume(3);
       PushString("--&gt;");
+      return true;
+    }
+  }
+
+  // 7. External URL Restoration (EXP-160)
+  if (flags_ & TRANSFORM_URLS) {
+    if (StartsWith("[www_lit.")) {
+      Consume(9);
+      PushString("[www.");
+      return true;
+    }
+    if (StartsWith("[slash_lit.")) {
+      Consume(11);
+      PushString("[//");
+      return true;
+    }
+    if (StartsWith("[www.")) {
+      Consume(5);
+      PushString("[http://www.");
+      return true;
+    }
+    if (StartsWith("[//")) {
+      Consume(3);
+      PushString("[http://");
       return true;
     }
   }
