@@ -94,6 +94,10 @@ void Predictor::AddAuxiliary() {
   auxiliary_.push_back(index);
 }
 
+void Predictor::AddAuxiliary(unsigned int index) {
+  auxiliary_.push_back(index);
+}
+
 void Predictor::AddFXCM() {
   FXCM* fxcm = new FXCM();
   AddModel(fxcm);
@@ -267,9 +271,10 @@ void Predictor::AddMixers() {
       vocab_size, new Lstm(vocab_size, vocab_size, 200, 2, 100, 0.03, 10)));
   AddAuxiliary();
 
-  // EXP-167: FW-DUAL Multi-Scale Associative Memory (512 dimensions)
-  fast_weights_.reset(new FastWeightsModel(vocab_, 512));
-  AddAuxiliary();
+  // EXP-178: Disentangled Dual-Stream Fast-Weights Associative Memory (400d Syn + 256d Lex)
+  fast_weights_.reset(new FastWeightsModel(vocab_));
+  AddAuxiliary(GetNumModels() - 2);  // Head 0: Persistent Syntactic
+  AddAuxiliary(GetNumModels() - 1);  // Head 1: Burst Lexical
 
   for (int i = 0; i < 2; ++i) {
     layers_.push_back(std::unique_ptr<MixerInput>(new MixerInput(sigmoid_,
@@ -598,27 +603,57 @@ void Predictor::Perceive(int bit) {
       byte_mixer->ByteUpdate();
     }
     if (fast_weights_ && !byte_mixers_.empty()) {
-      // Assemble 512-dimensional multi-scale feature vector:
-      alignas(32) float feat_512[512] = {0.0f};
-
-      // 1. Recurrent LSTM hidden states L0 + L1 (400 dims)
+      // Stream 1: Persistent Syntactic Head (400d LSTM activations)
+      alignas(32) float feat_syn[400] = {0.0f};
       const auto& h_lstm = byte_mixers_[0]->Hidden();
       int copy_lstm = std::min((int)h_lstm.size(), 400);
-      std::memcpy(feat_512, &h_lstm[0], copy_lstm * sizeof(float));
-
-      // 2. Local character context n-gram embeddings (64 dims)
-      for (int k = 0; k < 8; ++k) {
-        uint8_t b = (uint8_t)manager_.recent_bytes_[k];
-        feat_512[400 + k * 8 + (b & 7)] = 1.0f;
+      if (copy_lstm > 0) {
+        std::memcpy(feat_syn, &h_lstm[0], copy_lstm * sizeof(float));
       }
 
-      // 3. Top CMIX model consensus predictions (48 dims)
-      const auto& in0 = layers_[0]->Inputs();
-      int copy_in0 = std::min((int)in0.size(), 48);
-      std::memcpy(feat_512 + 464, &in0[0], copy_in0 * sizeof(float));
+      // Stream 2: Burst Lexical Head (256d lexical context features)
+      alignas(32) float feat_lex[256] = {0.0f};
+
+      // 1. Recent character history (128 dims: past 8 bytes * 16 dims)
+      for (int k = 0; k < 8; ++k) {
+        uint8_t b = (uint8_t)manager_.recent_bytes_[k];
+        for (int bit_idx = 0; bit_idx < 8; ++bit_idx) {
+          feat_lex[k * 16 + bit_idx] = ((b >> bit_idx) & 1) ? 1.0f : 0.0f;
+        }
+        feat_lex[k * 16 + 8 + (b & 7)] = 1.0f;
+      }
+
+      // 2. Word and line structural classes (32 dims: 128..159)
+      feat_lex[128] = std::min(manager_.line_break_, 99ULL) / 100.0f;
+      feat_lex[129] = (manager_.line_break_ == 0) ? 1.0f : 0.0f;
+      feat_lex[130] = std::min(manager_.longest_match_, 64ULL) / 64.0f;
+      uint8_t regime = manager_.longest_match_regime_ & 3;
+      feat_lex[131 + regime] = 1.0f;
+
+      for (int k = 0; k < 2; ++k) {
+        uint8_t b = (uint8_t)manager_.recent_bytes_[k];
+        int base = 135 + k * 5;
+        if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')) feat_lex[base + 0] = 1.0f;
+        if (b >= '0' && b <= '9') feat_lex[base + 1] = 1.0f;
+        if (b == ' ' || b == '\t' || b == '\n' || b == '\r') feat_lex[base + 2] = 1.0f;
+        if (b >= 'A' && b <= 'Z') feat_lex[base + 3] = 1.0f;
+        if (b < 32 || b == '<' || b == '>' || b == '[' || b == ']' || b == '{' || b == '}') feat_lex[base + 4] = 1.0f;
+      }
+
+      feat_lex[145 + (manager_.words_[0] & 7)] = 1.0f;
+      feat_lex[153 + (manager_.words_[1] & 7)] = 1.0f;
+
+      // 3. Top CMIX model consensus predictions (96 dims: 160..255)
+      if (!layers_.empty() && layers_[0]->Inputs().size() > 0) {
+        const auto& in0 = layers_[0]->Inputs();
+        int copy_in0 = std::min((int)in0.size(), 96);
+        if (copy_in0 > 0) {
+          std::memcpy(feat_lex + 160, &in0[0], copy_in0 * sizeof(float));
+        }
+      }
 
       // Causal pairing: Update on observed byte, then compute forward pass for upcoming byte
-      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], feat_512);
+      fast_weights_->UpdateByte((uint8_t)manager_.recent_bytes_[0], feat_syn, feat_lex);
     }
   }
   for (const auto& byte_mixer : byte_mixers_) {
