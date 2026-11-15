@@ -1503,7 +1503,7 @@ struct ContextMap2 {
 // Construct using m bytes of memory for c contexts(c+7)&-8
 void __attribute__ ((noinline)) Init(U32 m1, int c, int s3,const U8 *nn1,int cs4,int k,int u,short *st){
     C=c&255;
-    int m=m1*2;
+    int m=m1*4;   // EXP-165 (W3): every ContextMap2 table x2 (m1*4, was m1*2)
     tmask=((m>>7)-1); 
     cn=0;
     cxtMask=((1<C)-1)*2; // Inital zero contexts
@@ -3537,13 +3537,13 @@ void PredictorInit() {
     maps1.Init(16, 8);
     maps2.Init(16, 8);
 
-    // EXP-069: 5 DemandBuffer-backed DirectStateMaps (0 MB startup heap commit, 976 MiB virtual capacity)
+    // EXP-165 (W3): 5 DemandBuffer-backed DirectStateMaps +1 bit each (neif 28/29/24/27/26 -> 29/30/25/28/27)
     const int dccount = 6;
-    dcsm.Init(28, dccount - 1, &STA7[0][0]);
-    dcsm0.Init(29, dccount,    &STA7[0][0]);
-    dcsm1.Init(24, 2,          &STA7[0][0]);
-    dcsm2.Init(27, 3,          &STA7[0][0]);
-    dcsmN.Init(26, 3,          &STA7[0][0]);
+    dcsm.Init(29, dccount - 1, &STA7[0][0]);
+    dcsm0.Init(30, dccount,    &STA7[0][0]);
+    dcsm1.Init(25, 2,          &STA7[0][0]);
+    dcsm2.Init(28, 3,          &STA7[0][0]);
+    dcsmN.Init(27, 3,          &STA7[0][0]);
 
     // Mixers      size,  shift, err, errmul 
     mxA[0].Init(    2048, 237,  8, 69); // general
