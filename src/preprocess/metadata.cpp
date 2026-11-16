@@ -43,60 +43,37 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     ++count_bp;
   }
 
-  // 2. XML Boilerplate & Inter-page transition (EXP-035, EXP-038, EXP-039)
+  // 2. XML Boilerplate & Inter-page transition (EXP-186 Token-Safe)
   if (flags & TRANSFORM_BOILERPLATE) {
     ReplaceAll(s, "<text>", "<text_lit>");
-    // EXP-039: Strip \n      indentation before <text xml:space="preserve">
     ReplaceAll(s, "\n      <text xml:space=\"preserve\">", "<text>");
     ReplaceAll(s, "<text xml:space=\"preserve\">", "<text_fallback>");
 
-    ReplaceAll(s, "</text>\n    </revision>\n  </page>\n  <page>\n    <title>", "</text>\n<page><title>");
+    // Token-Safe Inter-page transition
+    ReplaceAll(s, "</text>\n    </revision>\n  </page>\n  <page>\n    <title>", "\n<page><title>");
 
-    // EXP-038: Contributor & Revision Schema Compaction
+    // Contributor & Revision Schema Compaction
     ReplaceAll(s, "\n    <revision>\n      <id>", "\n<revision><id>");
-    // EXP-045: Eliminate intra-schema boundary newlines
     ReplaceAll(s, "\n      <contributor>\n        <username>", "<username>");
     ReplaceAll(s, "</username>\n        <id>", "</username><id>");
-    ReplaceAll(s, "</id>\n      </contributor>", "</id></contributor>");
+    ReplaceAll(s, "</id>\n      </contributor>", "</uid>");
     ReplaceAll(s, "\n      <contributor>\n        <ip>", "<ip>");
-    ReplaceAll(s, "</ip>\n      </contributor>", "</ip></contributor>");
+    ReplaceAll(s, "</ip>\n      </contributor>", "</uip>");
     ReplaceAll(s, "\n      <minor />", "<minor>");
     ReplaceAll(s, "\n      <comment>", "<comment>");
 
-    // EXP-039: Strip \n      indentation before <timestamp>
     ReplaceAll(s, "</id>\n      <timestamp>", "</id><timestamp>");
     ++count_bp;
   }
 
-  // 3. Timestamp Normalization (EXP-033)
-  if (flags & TRANSFORM_TIMESTAMPS) {
-    size_t pos = 0;
-    while ((pos = s.find("<timestamp>", pos)) != std::string::npos) {
-      if (pos + 31 < s.size() && s.substr(pos + 31, 12) == "</timestamp>") {
-        std::string ts = s.substr(pos + 11, 20);
-        if (ts[0] == '2' && ts[1] == '0' && ts[4] == '-' && ts[7] == '-' &&
-            ts[10] == 'T' && ts[13] == ':' && ts[16] == ':' && ts[19] == 'Z') {
-          std::string compact;
-          compact += ts[2]; compact += ts[3];   // YY
-          compact += ts[5]; compact += ts[6];   // MM
-          compact += ts[8]; compact += ts[9];   // DD
-          compact += ts[11]; compact += ts[12]; // HH
-          compact += ts[14]; compact += ts[15]; // MM
-          compact += ts[17]; compact += ts[18]; // SS
-          s.replace(pos + 11, 20, compact);
-          ++count_ts;
-        }
-      }
-      pos += 11;
-    }
-  }
-
-  // 4. Page-ID Delta Encoding (EXP-032, EXP-039) & B1 Revision-ID Forecast (EXP-040)
-  if (flags & TRANSFORM_PAGE_IDS) {
+  // 3. E1 Revision ID + E3b Timestamp Forecasting
+  if ((flags & TRANSFORM_PAGE_IDS) || (flags & TRANSFORM_TIMESTAMPS) || (flags & TRANSFORM_REV_IDS)) {
     size_t pos = 0;
     unsigned long long prev_id = 0;
-    unsigned long long last_b1_pid = 0;
-    unsigned long long last_b1_rid = 0;
+    B1Interp enc_b1;
+    B2Basis enc_b2;
+    long long prev_sec = 0;
+    int ts_count = 0;
 
     while ((pos = s.find("</title>", pos)) != std::string::npos) {
       size_t ws_start = pos + 8;
@@ -107,46 +84,100 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
       if (id_pos + 4 < s.size() && s.substr(id_pos, 4) == "<id>") {
         size_t num_start = id_pos + 4;
         size_t num_end = num_start;
-        while (num_end < s.size() && s[num_end] >= '0' && s[num_end] <= '9') {
-          ++num_end;
-        }
+        while (num_end < s.size() && s[num_end] >= '0' && s[num_end] <= '9') ++num_end;
         if (num_end + 5 <= s.size() && s.substr(num_end, 5) == "</id>") {
           unsigned long long curr_id = std::stoull(s.substr(num_start, num_end - num_start));
           unsigned long long delta = curr_id - prev_id;
           prev_id = curr_id;
-          std::string repl = "<id>" + std::to_string(delta) + "</id>";
-          s.replace(ws_start, (num_end + 5) - ws_start, repl);
-          pos = ws_start + repl.size();
-          ++count_id;
 
-          // EXP-040: B1 Revision-ID Compaction (< 17,000,000)
-          if (flags & TRANSFORM_REV_IDS) {
-            size_t next_page = s.find("<page>", pos);
-            size_t rev_pos = s.find("\n<revision><id>", pos);
-            if (rev_pos != std::string::npos && (next_page == std::string::npos || rev_pos < next_page)) {
-              size_t rid_start = rev_pos + 15;
-              size_t rid_end = rid_start;
-              while (rid_end < s.size() && s[rid_end] >= '0' && s[rid_end] <= '9') {
-                ++rid_end;
+          if (flags & TRANSFORM_PAGE_IDS) {
+            std::string repl = "<id>" + std::to_string(delta) + "</id>";
+            s.replace(ws_start, (num_end + 5) - ws_start, repl);
+            pos = ws_start + repl.size();
+            ++count_id;
+          } else {
+            pos = num_end + 5;
+          }
+
+          // Process Revision ID and Timestamp
+          size_t next_page = s.find("<page>", pos);
+          size_t rev_pos = s.find("\n<revision><id>", pos);
+          if (rev_pos != std::string::npos && (next_page == std::string::npos || rev_pos < next_page)) {
+            size_t rid_start = rev_pos + 15;
+            size_t rid_end = rid_start;
+            while (rid_end < s.size() && s[rid_end] >= '0' && s[rid_end] <= '9') ++rid_end;
+            if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
+              unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
+
+              // E3b Timestamp Encoding
+              if (flags & TRANSFORM_TIMESTAMPS) {
+                size_t ts_pos = s.find("</id><timestamp>", rid_end);
+                if (ts_pos == rid_end) {
+                  size_t ts_val_start = ts_pos + 16;
+                  size_t ts_end = s.find("</timestamp>", ts_val_start);
+                  if (ts_end != std::string::npos && ts_end == ts_val_start + 20) {
+                    std::string ts = s.substr(ts_val_start, 20);
+                    if (ts[4] == '-' && ts[7] == '-' && ts[10] == 'T' && ts[13] == ':' && ts[16] == ':' && ts[19] == 'Z') {
+                      long long y = atoi(ts.c_str());
+                      unsigned m = atoi(ts.c_str() + 5);
+                      unsigned d = atoi(ts.c_str() + 8);
+                      unsigned hh = atoi(ts.c_str() + 11);
+                      unsigned mm = atoi(ts.c_str() + 14);
+                      unsigned ss = atoi(ts.c_str() + 17);
+                      long long sec = TsToSeconds(y, m, d, hh, mm, ss);
+
+                      long long pred = 0;
+                      std::string res_str;
+                      if (enc_b2.Prognose(revid, &pred)) {
+                        long long res = sec - pred;
+                        if (res == 0) res_str = "=";
+                        else if (res > 0) res_str = "+" + std::to_string(res);
+                        else res_str = std::to_string(res);
+                      } else {
+                        if (ts_count == 0) {
+                          // Safe caret '^' prefix avoiding dictionary '@' 0x0C escape
+                          res_str = "^" + std::to_string(sec);
+                        } else {
+                          long long res = sec - prev_sec;
+                          if (res == 0) res_str = "=";
+                          else if (res > 0) res_str = "+" + std::to_string(res);
+                          else res_str = std::to_string(res);
+                        }
+                      }
+                      enc_b2.Beobachte(revid, sec);
+                      prev_sec = sec;
+                      ++ts_count;
+                      ++count_ts;
+
+                      s.replace(ts_val_start, 20, res_str);
+                    }
+                  }
+                }
               }
-              if (rid_end + 5 <= s.size() && s.substr(rid_end, 5) == "</id>") {
-                unsigned long long revid = std::stoull(s.substr(rid_start, rid_end - rid_start));
-                if (revid < 17000000ULL) {
-                  unsigned long long forecast = (last_b1_pid == 0) ? 15898943ULL : (last_b1_rid + (curr_id - last_b1_pid));
-                  long long res = static_cast<long long>(revid) - static_cast<long long>(forecast);
-                  last_b1_pid = curr_id;
-                  last_b1_rid = revid;
+
+              // E1 Revision ID Encoding (revid < 17,000,000)
+              if (flags & TRANSFORM_REV_IDS) {
+                if (revid < B1Interp::kB1Max) {
+                  long long forecast = enc_b1.Prognose(curr_id);
+                  long long res = static_cast<long long>(revid) - forecast;
+                  enc_b1.Add(curr_id, revid);
+
                   std::string rev_repl;
                   if (res == 0) rev_repl = "+";
                   else rev_repl = "+" + std::to_string(res);
+
                   s.replace(rid_start, rid_end - rid_start, rev_repl);
                   pos = rid_start + rev_repl.size();
                   ++count_rev;
+                } else {
+                  pos = rid_end;
                 }
+              } else {
+                pos = rid_end;
               }
+              continue;
             }
           }
-          continue;
         }
       }
       pos += 8;
@@ -158,7 +189,8 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
-    : dict_(dict), in_(in), flags_(flags), prev_id_(0), last_b1_pid_(0), last_b1_rid_(0), first_byte_(true), eof_(false) {}
+    : dict_(dict), in_(in), flags_(flags), prev_id_(0), curr_revid_(0),
+      dec_prev_sec_(0), first_byte_(true), eof_(false) {}
 
 int StreamingDecoder::GetByte() {
   while (buf_.empty()) {
@@ -169,13 +201,39 @@ int StreamingDecoder::GetByte() {
   return c;
 }
 
+bool StreamingDecoder::StartsWith(const char* prefix) const {
+  size_t len = strlen(prefix);
+  if (window_.size() < len) return false;
+  for (size_t i = 0; i < len; ++i) {
+    if (window_[i] != prefix[i]) return false;
+  }
+  return true;
+}
+
+bool StreamingDecoder::SubstrEquals(size_t offset, const char* str) const {
+  size_t len = strlen(str);
+  if (offset + len > window_.size()) return false;
+  for (size_t i = 0; i < len; ++i) {
+    if (window_[offset + i] != str[i]) return false;
+  }
+  return true;
+}
+
+void StreamingDecoder::Consume(size_t n) {
+  for (size_t i = 0; i < n; ++i) window_.pop_front();
+}
+
+void StreamingDecoder::PushString(const std::string& s) {
+  for (char ch : s) buf_.push_back(static_cast<unsigned char>(ch));
+}
+
 bool StreamingDecoder::Fill() {
   auto next_byte = [this]() -> int {
     if (dict_ != NULL) return dict_->Decode(in_);
     return getc(in_);
   };
 
-  while (window_.size() < 48 && !eof_) {
+  while (window_.size() < 128 && !eof_) {
     int c = next_byte();
     if (c == EOF) {
       eof_ = true;
@@ -183,10 +241,9 @@ bool StreamingDecoder::Fill() {
     }
     window_.push_back(static_cast<char>(c));
   }
-
   if (window_.empty()) return false;
 
-  // 1. Header at stream start
+  // 1. MediaWiki header expansion
   if (first_byte_) {
     first_byte_ = false;
     if ((flags_ & TRANSFORM_BOILERPLATE) && StartsWith(kCompactHeader)) {
@@ -196,13 +253,32 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 2. Page-ID Delta (EXP-039 compact: </title><id>delta</id>)
+  // 2. Inter-page transition: \n<page><title> (14 chars)
+  if ((flags_ & TRANSFORM_BOILERPLATE) && StartsWith("\n<page><title>")) {
+    Consume(14);
+    PushString("</text>\n    </revision>\n  </page>\n  <page>\n    <title>");
+    return true;
+  }
+
+  // 3. Contributor closing tokens
+  if (flags_ & TRANSFORM_BOILERPLATE) {
+    if (StartsWith("</uid>")) {
+      Consume(6);
+      PushString("</id>\n      </contributor>");
+      return true;
+    }
+    if (StartsWith("</uip>")) {
+      Consume(6);
+      PushString("</ip>\n      </contributor>");
+      return true;
+    }
+  }
+
+  // 4. Page-ID Delta expansion
   if ((flags_ & TRANSFORM_PAGE_IDS) && StartsWith("</title><id>")) {
     size_t num_start = 12;
     size_t num_end = num_start;
-    while (num_end < window_.size() && window_[num_end] >= '0' && window_[num_end] <= '9') {
-      ++num_end;
-    }
+    while (num_end < window_.size() && window_[num_end] >= '0' && window_[num_end] <= '9') ++num_end;
     if (num_end + 5 <= window_.size() && SubstrEquals(num_end, "</id>")) {
       std::string delta_str;
       for (size_t i = num_start; i < num_end; ++i) delta_str += window_[i];
@@ -213,44 +289,13 @@ bool StreamingDecoder::Fill() {
       PushString("</title>\n    <id>");
       PushString(std::to_string(curr_id));
       PushString("</id>");
-
       Consume(num_end + 5);
       return true;
     }
+    if (num_end + 5 > window_.size() && !eof_) return false;
   }
 
-  // Fallback for Page-ID Delta with original whitespace (if any)
-  if ((flags_ & TRANSFORM_PAGE_IDS) && StartsWith("</title>")) {
-    size_t pos = 8;
-    while (pos < window_.size() && (window_[pos] == ' ' || window_[pos] == '\t' || window_[pos] == '\r' || window_[pos] == '\n')) {
-      ++pos;
-    }
-    if (pos + 4 <= window_.size() && SubstrEquals(pos, "<id>")) {
-      size_t num_start = pos + 4;
-      size_t num_end = num_start;
-      while (num_end < window_.size() && window_[num_end] >= '0' && window_[num_end] <= '9') {
-        ++num_end;
-      }
-      if (num_end + 5 <= window_.size() && SubstrEquals(num_end, "</id>")) {
-        std::string delta_str;
-        for (size_t i = num_start; i < num_end; ++i) delta_str += window_[i];
-        unsigned long long delta = std::stoull(delta_str);
-        unsigned long long curr_id = prev_id_ + delta;
-        prev_id_ = curr_id;
-
-        PushString("</title>");
-        for (size_t i = 8; i < pos; ++i) buf_.push_back(window_[i]);
-        PushString("<id>");
-        PushString(std::to_string(curr_id));
-        PushString("</id>");
-
-        Consume(num_end + 5);
-        return true;
-      }
-    }
-  }
-
-  // 3a. EXP-040: B1 Revision ID (\n<revision><id>+...)
+  // 5a. E1 Revision ID expansion: \n<revision><id>+...
   if ((flags_ & TRANSFORM_REV_IDS) && StartsWith("\n<revision><id>+")) {
     size_t end_tag = 16;
     while (end_tag < window_.size() && window_[end_tag] != '<') ++end_tag;
@@ -261,81 +306,80 @@ bool StreamingDecoder::Fill() {
         for (size_t i = 16; i < end_tag; ++i) res_str += window_[i];
         res = std::stoll(res_str);
       }
-      unsigned long long forecast = (last_b1_pid_ == 0) ? 15898943ULL : (last_b1_rid_ + (prev_id_ - last_b1_pid_));
-      unsigned long long revid = forecast + res;
-      last_b1_pid_ = prev_id_;
-      last_b1_rid_ = revid;
+      long long forecast = dec_b1_.Prognose(prev_id_);
+      unsigned long long revid = static_cast<unsigned long long>(forecast + res);
+      dec_b1_.Add(prev_id_, revid);
+      curr_revid_ = revid;
 
       PushString("\n    <revision>\n      <id>");
       PushString(std::to_string(revid));
       Consume(end_tag);
       return true;
     }
+    if (end_tag + 5 > window_.size() && !eof_) return false;
   }
 
-  // 3b. Standard revision tag
-  if ((flags_ & TRANSFORM_BOILERPLATE) && StartsWith("\n<revision><id>")) {
-    Consume(15);
-    PushString("\n    <revision>\n      <id>");
-    return true;
-  }
+  // 5b. Standard Revision ID
+  if (StartsWith("\n<revision><id>")) {
+    size_t num_start = 15;
+    size_t num_end = num_start;
+    while (num_end < window_.size() && window_[num_end] >= '0' && window_[num_end] <= '9') ++num_end;
+    if (num_end > num_start && num_end + 5 <= window_.size() && SubstrEquals(num_end, "</id>")) {
+      std::string id_str;
+      for (size_t i = num_start; i < num_end; ++i) id_str += window_[i];
+      unsigned long long revid = std::stoull(id_str);
+      curr_revid_ = revid;
 
-  // 4a. Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
-  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>") && window_.size() >= 40 && SubstrEquals(28, "</timestamp>")) {
-    bool is_num = true;
-    for (size_t i = 16; i < 28; ++i) {
-      if (window_[i] < '0' || window_[i] > '9') { is_num = false; break; }
-    }
-    if (is_num) {
-      std::string ts = "</id>\n      <timestamp>20";
-      ts += window_[16]; ts += window_[17]; ts += '-';
-      ts += window_[18]; ts += window_[19]; ts += '-';
-      ts += window_[20]; ts += window_[21]; ts += 'T';
-      ts += window_[22]; ts += window_[23]; ts += ':';
-      ts += window_[24]; ts += window_[25]; ts += ':';
-      ts += window_[26]; ts += window_[27]; ts += "Z</timestamp>";
-      Consume(40);
-      PushString(ts);
+      PushString("\n    <revision>\n      <id>");
+      PushString(id_str);
+      Consume(num_end);
       return true;
     }
+    if (num_end + 5 > window_.size() && !eof_) return false;
   }
 
-  // 4b. Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
-  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("<timestamp>") && window_.size() >= 35 && SubstrEquals(23, "</timestamp>")) {
-    bool is_num = true;
-    for (size_t i = 11; i < 23; ++i) {
-      if (window_[i] < '0' || window_[i] > '9') { is_num = false; break; }
-    }
-    if (is_num) {
-      std::string ts = "<timestamp>20";
-      ts += window_[11]; ts += window_[12]; ts += '-';
-      ts += window_[13]; ts += window_[14]; ts += '-';
-      ts += window_[15]; ts += window_[16]; ts += 'T';
-      ts += window_[17]; ts += window_[18]; ts += ':';
-      ts += window_[19]; ts += window_[20]; ts += ':';
-      ts += window_[21]; ts += window_[22]; ts += "Z</timestamp>";
-      Consume(35);
-      PushString(ts);
+  // 6. E3b Timestamp after </id>
+  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>")) {
+    size_t end_tag = 16;
+    while (end_tag < window_.size() && window_[end_tag] != '<') ++end_tag;
+    if (end_tag + 12 <= window_.size() && SubstrEquals(end_tag, "</timestamp>")) {
+      std::string token;
+      for (size_t i = 16; i < end_tag; ++i) token += window_[i];
+
+      long long sec = 0;
+      long long pred = 0;
+      if (token[0] == '^') {
+        sec = std::stoll(token.substr(1));
+      } else if (dec_b2_.Prognose(curr_revid_, &pred)) {
+        if (token == "=") sec = pred;
+        else sec = pred + std::stoll(token);
+      } else {
+        if (token == "=") sec = dec_prev_sec_;
+        else sec = dec_prev_sec_ + std::stoll(token);
+      }
+
+      dec_b2_.Beobachte(curr_revid_, sec);
+      dec_prev_sec_ = sec;
+
+      long long y; unsigned m, d, hh, mm, ss;
+      SecondsToTs(sec, &y, &m, &d, &hh, &mm, &ss);
+      char ts_buf[32];
+      snprintf(ts_buf, sizeof(ts_buf), "%04lld-%02u-%02uT%02u:%02u:%02uZ", y, m, d, hh, mm, ss);
+
+      PushString("</id>\n      <timestamp>");
+      PushString(ts_buf);
+      PushString("</timestamp>");
+      Consume(end_tag + 12);
       return true;
     }
+    if (end_tag + 12 > window_.size() && !eof_) return false;
   }
 
-  // 5. Boilerplate & Schema tokens
+  // 7. Boilerplate & Schema tokens
   if (flags_ & TRANSFORM_BOILERPLATE) {
-    if (StartsWith("</text>\n<page><title>")) {
-      Consume(21);
-      PushString("</text>\n    </revision>\n  </page>\n  <page>\n    <title>");
-      return true;
-    }
-    // EXP-039: Compact <text> restores \n      <text xml:space="preserve">
     if (StartsWith("<text>")) {
       Consume(6);
       PushString("\n      <text xml:space=\"preserve\">");
-      return true;
-    }
-    if (StartsWith("<text_fallback>")) {
-      Consume(15);
-      PushString("<text xml:space=\"preserve\">");
       return true;
     }
     if (StartsWith("<text_lit>")) {
@@ -343,26 +387,19 @@ bool StreamingDecoder::Fill() {
       PushString("<text>");
       return true;
     }
-
-    if (StartsWith("</id></contributor>")) {
-      Consume(19);
-      PushString("</id>\n      </contributor>");
+    if (StartsWith("<text_fallback>")) {
+      Consume(15);
+      PushString("<text xml:space=\"preserve\">");
       return true;
     }
-    if (StartsWith("</ip></contributor>")) {
-      Consume(19);
-      PushString("</ip>\n      </contributor>");
+    if (StartsWith("<username>")) {
+      Consume(10);
+      PushString("\n      <contributor>\n        <username>");
       return true;
     }
     if (StartsWith("</username><id>")) {
       Consume(15);
       PushString("</username>\n        <id>");
-      return true;
-    }
-    // EXP-045: Compact schema tokens (without leading newline)
-    if (StartsWith("<username>")) {
-      Consume(10);
-      PushString("\n      <contributor>\n        <username>");
       return true;
     }
     if (StartsWith("<ip>")) {
@@ -380,60 +417,12 @@ bool StreamingDecoder::Fill() {
       PushString("\n      <comment>");
       return true;
     }
-
-    // Fallbacks with leading newline
-    if (StartsWith("\n<username>")) {
-      Consume(11);
-      PushString("\n      <contributor>\n        <username>");
-      return true;
-    }
-    if (StartsWith("\n<ip>")) {
-      Consume(5);
-      PushString("\n      <contributor>\n        <ip>");
-      return true;
-    }
-    if (StartsWith("\n<minor>")) {
-      Consume(8);
-      PushString("\n      <minor />");
-      return true;
-    }
-    if (StartsWith("\n<comment>")) {
-      Consume(10);
-      PushString("\n      <comment>");
-      return true;
-    }
   }
 
-  // Default: pop single byte
+  // Default: emit byte
   buf_.push_back(static_cast<unsigned char>(window_.front()));
   window_.pop_front();
   return true;
-}
-
-bool StreamingDecoder::StartsWith(const std::string& prefix) const {
-  if (window_.size() < prefix.size()) return false;
-  for (size_t i = 0; i < prefix.size(); ++i) {
-    if (window_[i] != prefix[i]) return false;
-  }
-  return true;
-}
-
-bool StreamingDecoder::SubstrEquals(size_t offset, const std::string& str) const {
-  if (window_.size() < offset + str.size()) return false;
-  for (size_t i = 0; i < str.size(); ++i) {
-    if (window_[offset + i] != str[i]) return false;
-  }
-  return true;
-}
-
-void StreamingDecoder::Consume(size_t n) {
-  for (size_t i = 0; i < n && !window_.empty(); ++i) {
-    window_.pop_front();
-  }
-}
-
-void StreamingDecoder::PushString(const std::string& s) {
-  for (char ch : s) buf_.push_back(static_cast<unsigned char>(ch));
 }
 
 }  // namespace metadata
