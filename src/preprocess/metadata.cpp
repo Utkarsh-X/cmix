@@ -50,25 +50,26 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     ReplaceAll(s, "\n      <text xml:space=\"preserve\">", "<text>");
     ReplaceAll(s, "<text xml:space=\"preserve\">", "<text_fallback>");
 
-    ReplaceAll(s, "</text>\n    </revision>\n  </page>\n  <page>\n    <title>", "</text>\n<page><title>");
+    // EXP-186: Token-Safe Inter-page transition
+    ReplaceAll(s, "</text>\n    </revision>\n  </page>\n  <page>\n    <title>", "\n<page><title>");
 
-    // EXP-038: Contributor & Revision Schema Compaction
+    // EXP-038 & EXP-186: Contributor & Revision Schema Compaction
     ReplaceAll(s, "\n    <revision>\n      <id>", "\n<revision><id>");
     // EXP-045: Eliminate intra-schema boundary newlines
     ReplaceAll(s, "\n      <contributor>\n        <username>", "<username>");
     ReplaceAll(s, "</username>\n        <id>", "</username><id>");
-    ReplaceAll(s, "</id>\n      </contributor>", "</id></contributor>");
+    ReplaceAll(s, "</id>\n      </contributor>", "</uid>");
     ReplaceAll(s, "\n      <contributor>\n        <ip>", "<ip>");
-    ReplaceAll(s, "</ip>\n      </contributor>", "</ip></contributor>");
+    ReplaceAll(s, "</ip>\n      </contributor>", "</uip>");
     ReplaceAll(s, "\n      <minor />", "<minor>");
     ReplaceAll(s, "\n      <comment>", "<comment>");
 
-    // EXP-039: Strip \n      indentation before <timestamp>
+    // EXP-186: Token-Safe Timestamp Compaction
     ReplaceAll(s, "</id>\n      <timestamp>", "</id><timestamp>");
     ++count_bp;
   }
 
-  // 3. Timestamp Normalization (EXP-033)
+  // 3. Timestamp Normalization & Token Compaction (EXP-033 & EXP-186)
   if (flags & TRANSFORM_TIMESTAMPS) {
     size_t pos = 0;
     while ((pos = s.find("<timestamp>", pos)) != std::string::npos) {
@@ -76,15 +77,17 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
         std::string ts = s.substr(pos + 11, 20);
         if (ts[0] == '2' && ts[1] == '0' && ts[4] == '-' && ts[7] == '-' &&
             ts[10] == 'T' && ts[13] == ':' && ts[16] == ':' && ts[19] == 'Z') {
-          std::string compact;
+          std::string compact = "<ts>";
           compact += ts[2]; compact += ts[3];   // YY
           compact += ts[5]; compact += ts[6];   // MM
           compact += ts[8]; compact += ts[9];   // DD
           compact += ts[11]; compact += ts[12]; // HH
           compact += ts[14]; compact += ts[15]; // MM
           compact += ts[17]; compact += ts[18]; // SS
-          s.replace(pos + 11, 20, compact);
+          s.replace(pos, 43, compact);
+          pos += compact.size();
           ++count_ts;
+          continue;
         }
       }
       pos += 11;
@@ -280,7 +283,47 @@ bool StreamingDecoder::Fill() {
     return true;
   }
 
-  // 4a. Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
+  // 4a. Token-Safe Timestamp after </id>: </id><ts>YYMMDDHHMMSS (21 chars)
+  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><ts>") && window_.size() >= 21) {
+    bool is_num = true;
+    for (size_t i = 9; i < 21; ++i) {
+      if (window_[i] < '0' || window_[i] > '9') { is_num = false; break; }
+    }
+    if (is_num) {
+      std::string ts = "</id>\n      <timestamp>20";
+      ts += window_[9]; ts += window_[10]; ts += '-';
+      ts += window_[11]; ts += window_[12]; ts += '-';
+      ts += window_[13]; ts += window_[14]; ts += 'T';
+      ts += window_[15]; ts += window_[16]; ts += ':';
+      ts += window_[17]; ts += window_[18]; ts += ':';
+      ts += window_[19]; ts += window_[20]; ts += "Z</timestamp>";
+      Consume(21);
+      PushString(ts);
+      return true;
+    }
+  }
+
+  // 4b. Token-Safe Fallback Timestamp: <ts>YYMMDDHHMMSS (16 chars)
+  if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("<ts>") && window_.size() >= 16) {
+    bool is_num = true;
+    for (size_t i = 4; i < 16; ++i) {
+      if (window_[i] < '0' || window_[i] > '9') { is_num = false; break; }
+    }
+    if (is_num) {
+      std::string ts = "<timestamp>20";
+      ts += window_[4]; ts += window_[5]; ts += '-';
+      ts += window_[6]; ts += window_[7]; ts += '-';
+      ts += window_[8]; ts += window_[9]; ts += 'T';
+      ts += window_[10]; ts += window_[11]; ts += ':';
+      ts += window_[12]; ts += window_[13]; ts += ':';
+      ts += window_[14]; ts += window_[15]; ts += "Z</timestamp>";
+      Consume(16);
+      PushString(ts);
+      return true;
+    }
+  }
+
+  // 4c. Legacy Compact Timestamp (EXP-039: </id><timestamp>YYMMDDHHMMSS</timestamp>, 40 chars)
   if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("</id><timestamp>") && window_.size() >= 40 && SubstrEquals(28, "</timestamp>")) {
     bool is_num = true;
     for (size_t i = 16; i < 28; ++i) {
@@ -300,7 +343,7 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // 4b. Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
+  // 4d. Legacy Fallback Timestamp (35 chars: <timestamp>YYMMDDHHMMSS</timestamp>)
   if ((flags_ & TRANSFORM_TIMESTAMPS) && StartsWith("<timestamp>") && window_.size() >= 35 && SubstrEquals(23, "</timestamp>")) {
     bool is_num = true;
     for (size_t i = 11; i < 23; ++i) {
@@ -322,6 +365,12 @@ bool StreamingDecoder::Fill() {
 
   // 5. Boilerplate & Schema tokens
   if (flags_ & TRANSFORM_BOILERPLATE) {
+    // EXP-186: Inter-page transition: \n<page><title> (14 chars)
+    if (StartsWith("\n<page><title>")) {
+      Consume(14);
+      PushString("</text>\n    </revision>\n  </page>\n  <page>\n    <title>");
+      return true;
+    }
     if (StartsWith("</text>\n<page><title>")) {
       Consume(21);
       PushString("</text>\n    </revision>\n  </page>\n  <page>\n    <title>");
@@ -344,6 +393,17 @@ bool StreamingDecoder::Fill() {
       return true;
     }
 
+    // EXP-186: Contributor closing tokens
+    if (StartsWith("</uid>")) {
+      Consume(6);
+      PushString("</id>\n      </contributor>");
+      return true;
+    }
+    if (StartsWith("</uip>")) {
+      Consume(6);
+      PushString("</ip>\n      </contributor>");
+      return true;
+    }
     if (StartsWith("</id></contributor>")) {
       Consume(19);
       PushString("</id>\n      </contributor>");
