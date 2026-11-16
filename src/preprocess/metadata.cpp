@@ -156,8 +156,68 @@ bool Transform(FILE* in, int len, FILE* out, int flags) {
     }
   }
 
+  // 5. EXP-188: Piped Wikilink Compaction
+  size_t count_wl = 0;
+  if (flags & TRANSFORM_WIKILINKS) {
+    std::string out_s;
+    out_s.reserve(s.size());
+    size_t i = 0;
+    const size_t n = s.size();
+    while (i < n) {
+      if (i + 2 <= n && s[i] == '[' && s[i + 1] == '[') {
+        size_t end_b = s.find("]]", i + 2);
+        size_t next_o = s.find("[[", i + 2);
+        size_t next_nl = s.find('\n', i + 2);
+        if (end_b != std::string::npos &&
+            (next_o == std::string::npos || next_o > end_b) &&
+            (next_nl == std::string::npos || next_nl > end_b)) {
+          std::string inside = s.substr(i + 2, end_b - (i + 2));
+          size_t pipe = inside.find('|');
+          if (pipe != std::string::npos && inside.find('|', pipe + 1) == std::string::npos) {
+            std::string target = inside.substr(0, pipe);
+            std::string anchor = inside.substr(pipe + 1);
+            std::string repl = "";
+            bool matched = false;
+
+            if (target == anchor) {
+              repl = "+"; matched = true;
+            } else {
+              size_t fsp = target.find(' ');
+              size_t lsp = target.rfind(' ');
+              if (lsp != std::string::npos && target.substr(lsp + 1) == anchor) {
+                repl = "~"; matched = true;
+              } else if (fsp != std::string::npos && target.substr(0, fsp) == anchor) {
+                repl = "^"; matched = true;
+              } else if (anchor.size() > target.size() && anchor.compare(0, target.size(), target) == 0) {
+                repl = "+" + anchor.substr(target.size()); matched = true;
+              } else if (target.size() > 2 && target.back() == ')') {
+                size_t paren = target.rfind(" (");
+                if (paren != std::string::npos && target.substr(0, paren) == anchor) {
+                  repl = "%"; matched = true;
+                }
+              }
+            }
+
+            if (matched) {
+              out_s += "[[" + target + "|" + repl + "]]";
+              i = end_b + 2;
+              ++count_wl;
+              continue;
+            } else if (!anchor.empty() && (anchor[0] == '~' || anchor[0] == '^' || anchor[0] == '%' || anchor[0] == '+')) {
+              out_s += "[[" + target + "|" + anchor[0] + anchor + "]]";
+              i = end_b + 2;
+              continue;
+            }
+          }
+        }
+      }
+      out_s += s[i++];
+    }
+    s = std::move(out_s);
+  }
+
   fwrite(s.data(), 1, s.size(), out);
-  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0);
+  return (count_id > 0 || count_ts > 0 || count_bp > 0 || count_rev > 0 || count_wl > 0);
 }
 
 StreamingDecoder::StreamingDecoder(preprocessor::Dictionary* dict, FILE* in, int flags)
@@ -178,7 +238,7 @@ bool StreamingDecoder::Fill() {
     return getc(in_);
   };
 
-  while (window_.size() < 48 && !eof_) {
+  while (window_.size() < 512 && !eof_) {
     int c = next_byte();
     if (c == EOF) {
       eof_ = true;
@@ -464,7 +524,56 @@ bool StreamingDecoder::Fill() {
     }
   }
 
-  // Default: pop single byte
+  // 8. EXP-188: Piped Wikilink Expansion
+  if ((flags_ & TRANSFORM_WIKILINKS) && window_.size() >= 2 && window_[0] == '[' && window_[1] == '[') {
+    size_t end_b = std::string::npos;
+    bool invalid = false;
+    for (size_t i = 2; i + 1 < window_.size(); ++i) {
+      if (window_[i] == '\n' || (window_[i] == '[' && window_[i + 1] == '[')) {
+        invalid = true; break;
+      }
+      if (window_[i] == ']' && window_[i + 1] == ']') {
+        end_b = i; break;
+      }
+    }
+    if (!invalid && end_b != std::string::npos) {
+      std::string inside(window_.begin() + 2, window_.begin() + end_b);
+      size_t pipe = inside.find('|');
+      if (pipe != std::string::npos && inside.find('|', pipe + 1) == std::string::npos) {
+        std::string target = inside.substr(0, pipe);
+        std::string anchor = inside.substr(pipe + 1);
+        std::string orig = "";
+        bool matched = false;
+
+        if (anchor.size() >= 2 && (anchor[0] == '~' || anchor[0] == '^' || anchor[0] == '%' || anchor[0] == '+') && anchor[1] == anchor[0]) {
+          orig = anchor.substr(1); matched = true;
+        } else if (anchor == "~") {
+          size_t sp = target.rfind(' ');
+          if (sp != std::string::npos) { orig = target.substr(sp + 1); matched = true; }
+        } else if (anchor == "^") {
+          size_t sp = target.find(' ');
+          if (sp != std::string::npos) { orig = target.substr(0, sp); matched = true; }
+        } else if (anchor == "%") {
+          size_t p = target.rfind(" (");
+          if (p != std::string::npos) { orig = target.substr(0, p); matched = true; }
+        } else if (anchor == "+") {
+          orig = target; matched = true;
+        } else if (anchor.size() >= 2 && anchor[0] == '+') {
+          orig = target + anchor.substr(1); matched = true;
+        }
+
+        if (matched) {
+          Consume(end_b + 2);
+          PushString("[[" + target + "|" + orig + "]]");
+          return true;
+        }
+      }
+    } else if (!invalid && !eof_) {
+      return false; // Wait for further bytes in sliding window
+    }
+  }
+
+  // Default: emit byte
   buf_.push_back(static_cast<unsigned char>(window_.front()));
   window_.pop_front();
   return true;
