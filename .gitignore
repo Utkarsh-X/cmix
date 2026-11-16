@@ -9,3 +9,6 @@
 build_msvc/
 *.exe
 scratch/
+*.cmix
+*.dat
+__pycache__/

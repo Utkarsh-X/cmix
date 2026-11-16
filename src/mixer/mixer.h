@@ -36,6 +36,7 @@ class Mixer {
   const float* E2EXRow();
   void E2ESetErr(float e) { e2e_err_ = e; e2e_use_ = true; }
   void E2ESeedHead(unsigned int head, float val);
+  void SetWeight(unsigned int index, float val);
 
  private:
   inline ContextData* GetContextData();

@@ -12,10 +12,13 @@
 #include "models/ppmd.h"
 #include "context-manager.h"
 #include "char_rate.h"
+#include "tf1/tf1_engine.h"
 
 #include <vector>
 #include <set>
 #include <memory>
+
+class Match;
 
 class Predictor {
  public:
@@ -61,7 +64,15 @@ class Predictor {
   Sigmoid sigmoid_;
   std::vector<std::unique_ptr<ByteMixer>> byte_mixers_;
   std::unique_ptr<FastWeightsModel> fast_weights_;
+  std::vector<Match*> match_models_;
   PPMD::PPMD* ppmd_ = nullptr;
+  std::unique_ptr<transformer::Tf1Engine> tf1_engine_;
+  std::unique_ptr<Tf1Slot> tf1_slot_;
+  std::unique_ptr<Tf1Slot> fw_slot_;
+  unsigned int tf1_slot_index_ = 0;
+  unsigned int fw_slot_index_ = 0;
+  unsigned int tf1_aux_slot_ = 0;
+  unsigned int fw_aux_slot_ = 0;
   const Context* template_context_ = nullptr;
   const Context* table_context_ = nullptr;
   const Context* citation_context_ = nullptr;

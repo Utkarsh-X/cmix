@@ -25,4 +25,14 @@ class ByteMixer : public ByteModel {
   unsigned int num_models_, vocab_size_, offset_;
 };
 
+#include "../transformer.h"
+
+class Tf1Slot : public ByteModel {
+ public:
+  explicit Tf1Slot(const std::vector<bool>& vocab) : ByteModel(vocab) {}
+  void SetProbs(const float* set_probs);
+  void SetProbsNeutral();
+  void SetProbsOff();
+};
+
 #endif

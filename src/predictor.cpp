@@ -65,6 +65,12 @@ unsigned long long Predictor::GetNumModels() {
   if (fast_weights_) {
     num += fast_weights_->NumOutputs();
   }
+  if (tf1_slot_) {
+    num += tf1_slot_->NumOutputs();
+  }
+  if (fw_slot_) {
+    num += fw_slot_->NumOutputs();
+  }
   return num;
 }
 
@@ -121,6 +127,12 @@ void Predictor::AddBracket() {
 void Predictor::AddPPMD() {
   ppmd_ = new PPMD::PPMD(25, 2048, manager_.bit_context_, vocab_);
   AddByteModel(ppmd_);
+
+  if (transformer::Running()) {
+    tf1_engine_.reset(new transformer::Tf1Engine(vocab_, transformer::WeightsPath()));
+  }
+  tf1_slot_.reset(new Tf1Slot(vocab_));
+  fw_slot_.reset(new Tf1Slot(vocab_));
 }
 
 void Predictor::AddWord() {
@@ -186,9 +198,11 @@ void Predictor::AddMatch() {
     const Context& context = manager_.AddContext(std::unique_ptr<Context>(
         new ContextHash(manager_.bit_context_, params[0], params[1])));
     unsigned long long max_size = (params.size() > 2) ? params[2] : default_max_size;
-    AddModel(new Match(manager_.history_, context.GetContext(),
+    Match* m = new Match(manager_.history_, context.GetContext(),
         manager_.bit_context_, limit, delta, std::min(max_size, context.Size()),
-        &(manager_.longest_match_)));
+        &(manager_.longest_match_));
+    AddModel(m);
+    match_models_.push_back(m);
   }
 }
 
@@ -433,15 +447,19 @@ void Predictor::AddMixers() {
   AddMixer(0, manager_.b3streamcxt, 0.001);   // 3-bit syntax stream with bracket resets (512 states)
   AddMixer(0, manager_.b2streamcxt, 0.001);   // 2-bit class stream (1024 states)
 
-  // EXP-183: Reserve extra Layer-1 input slot for bilinear PPMd feature
-  ppmd_bilinear_slot_ = mixers_[0].size() + auxiliary_.size();
+  // EXP-190: Reserve extra Layer-1 input slots for tf1_slot, fw_slot, and ppmd_bilinear
+  tf1_aux_slot_ = mixers_[0].size() + auxiliary_.size();
+  fw_aux_slot_  = tf1_aux_slot_ + 1;
+  ppmd_bilinear_slot_ = fw_aux_slot_ + 1;
   input_size = ppmd_bilinear_slot_ + 1;
   layers_[1]->SetNumModels(input_size);
   AddMixer(1, manager_.zero_context_, 0.0003);
   mixers_[1][0]->E2ESeedHead(mixers_[0].size(), 1.0f / (float)mixers_[0].size());
-  // EXP-167: Un-muffle Fast-Weights in Layer-1 final mixer with 0.15f active prior
-  unsigned int fw_aux_slot = mixers_[0].size() + (auxiliary_.size() - 1);
-  mixers_[1][0]->E2ESeedHead(fw_aux_slot + 1, 0.15f);
+  for (unsigned int i = 0; i < auxiliary_.size(); ++i) {
+    mixers_[1][0]->SetWeight(mixers_[0].size() + i, 0.05f);
+  }
+  mixers_[1][0]->SetWeight(tf1_aux_slot_, 0.05f);
+  mixers_[1][0]->SetWeight(fw_aux_slot_,  0.05f);
   AddMixer(1, manager_.longest_match_regime_, 0.00015);
   // EXP-183: Layer-1 MoE PPMd Order-Regime Residual Mixer
   AddMixer(1, manager_.ppmd_order_regime_, 0.00015);
@@ -484,6 +502,22 @@ float Predictor::Predict() {
     const std::valarray<float>& outputs = fast_weights_->Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0]->SetInput(input_index, outputs[j]);
+      ++input_index;
+    }
+  }
+  if (tf1_slot_) {
+    const std::valarray<float>& outputs = tf1_slot_->Predict();
+    for (unsigned int j = 0; j < outputs.size(); ++j) {
+      layers_[0]->SetInput(input_index, outputs[j]);
+      tf1_slot_index_ = input_index;
+      ++input_index;
+    }
+  }
+  if (fw_slot_) {
+    const std::valarray<float>& outputs = fw_slot_->Predict();
+    for (unsigned int j = 0; j < outputs.size(); ++j) {
+      layers_[0]->SetInput(input_index, outputs[j]);
+      fw_slot_index_ = input_index;
       ++input_index;
     }
   }
@@ -540,6 +574,12 @@ float Predictor::Predict() {
     float p = layers_[0]->Inputs()[auxiliary_[i]];
     layers_[1]->SetStretchedInput(mixers_[0].size() + i, p);
   }
+  if (tf1_slot_) {
+    layers_[1]->SetStretchedInput(tf1_aux_slot_, layers_[0]->Inputs()[tf1_slot_index_]);
+  }
+  if (fw_slot_) {
+    layers_[1]->SetStretchedInput(fw_aux_slot_, layers_[0]->Inputs()[fw_slot_index_]);
+  }
   // EXP-183: Forward bilinear feature directly into Layer 1
   layers_[1]->SetStretchedInput(ppmd_bilinear_slot_, ppmd_bilinear);
 
@@ -585,6 +625,12 @@ void Predictor::Perceive(int bit) {
   if (fast_weights_) {
     fast_weights_->Perceive(bit);
   }
+  if (tf1_slot_) {
+    tf1_slot_->Perceive(bit);
+  }
+  if (fw_slot_) {
+    fw_slot_->Perceive(bit);
+  }
   E2EGrad(bit);
   const unsigned int n0 = (unsigned int)mixers_[0].size();
   if (n0 > 0 && n0 <= 64) {
@@ -616,11 +662,47 @@ void Predictor::Perceive(int bit) {
 
   manager_.UpdateContexts(bit);
   if (byte_update) {
+    unsigned int completed_byte = (manager_.bit_context_ & 0xFF);
+    if (tf1_engine_ && !match_models_.empty()) {
+      unsigned int best = 0;
+      unsigned char best_len = match_models_[0]->MatchLength();
+      for (unsigned int q = 1; q < match_models_.size(); ++q) {
+        unsigned char l = match_models_[q]->MatchLength();
+        if (l > best_len) { best_len = l; best = q; }
+      }
+      tf1_engine_->SetMatch(match_models_[best]->MatchByte(), (int)best_len);
+    }
+    if (tf1_engine_) {
+      const float* tf1_row = tf1_engine_->Step(ppmd_->BytePredict(), completed_byte);
+      if (tf1_row && transformer::Active()) {
+        if (tf1_engine_->GateMasked()) {
+          tf1_slot_->SetProbsNeutral();
+          fw_slot_->SetProbsNeutral();
+          tf1_engine_->FwNeutral();
+        } else {
+          tf1_slot_->SetProbs(tf1_row);
+          fw_slot_->SetProbs(tf1_engine_->FwRow());
+        }
+      } else {
+        tf1_slot_->SetProbsOff();
+        fw_slot_->SetProbsOff();
+        tf1_engine_->FwNeutral();
+      }
+    } else {
+      if (tf1_slot_) tf1_slot_->SetProbsNeutral();
+      if (fw_slot_) fw_slot_->SetProbsNeutral();
+    }
     for (const auto& model : models_) {
       model->ByteUpdate();
     }
     for (const auto& model : byte_models_) {
       model->ByteUpdate();
+    }
+    if (tf1_slot_) {
+      tf1_slot_->ByteUpdate();
+    }
+    if (fw_slot_) {
+      fw_slot_->ByteUpdate();
     }
     for (unsigned int i = 0; i < byte_models_.size(); ++i) {
       const std::valarray<float>& p = byte_models_[i]->BytePredict();

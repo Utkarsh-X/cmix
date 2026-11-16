@@ -32,7 +32,17 @@ def get_msvc_env():
 
 def compile_file(args):
     cl_exe, cpp_file, obj_file, env, flags, inc = args
-    cmd = [cl_exe, "/nologo", *flags, f"/I{inc}", f"/I{os.path.join(inc, 'src')}", "/c", cpp_file, f"/Fo{obj_file}"]
+    inc_paths = [
+        f"/I{inc}",
+        f"/I{os.path.join(inc, 'src')}",
+        f"/I{os.path.join(inc, 'win_compat')}",
+        f"/I{os.path.join(inc, 'src', 'tf1')}",
+        f"/I{os.path.join(inc, 'src', 'tf1', 'opt')}",
+        f"/I{os.path.join(inc, 'src', 'mixer')}",
+        f"/I{os.path.join(inc, 'src', 'models')}",
+        f"/I{os.path.join(inc, 'src', 'preprocess')}",
+    ]
+    cmd = [cl_exe, "/nologo", *flags, *inc_paths, "/c", cpp_file, f"/Fo{obj_file}"]
     t0 = time.time()
     res = subprocess.run(cmd, env=env, capture_output=True, text=True)
     el = time.time() - t0

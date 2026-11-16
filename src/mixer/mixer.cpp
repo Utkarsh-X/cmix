@@ -247,6 +247,13 @@ void Mixer::E2ESeedHead(unsigned int head, float val) {
   }
 }
 
+void Mixer::SetWeight(unsigned int index, float val) {
+  ContextData* d = GetContextData();
+  if (index < d->weights.size()) {
+    d->weights[index] = val;
+  }
+}
+
 float Mixer::ComputeUpdate(int bit) {
   ContextData* data = current_data_ ? current_data_ : GetContextData();
   current_data_ = data;

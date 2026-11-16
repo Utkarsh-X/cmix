@@ -28,7 +28,7 @@ void ByteMixer::SetOutputBias(const float* bias256) {
 }
 
 void ByteMixer::ByteUpdate() {
-  inputs_ *= 2 / num_models_;
+  inputs_ *= 2.0f / (float)num_models_;
   lstm_->SetInput(inputs_);
   inputs_ = 0;
   const auto& output = lstm_->Perceive(byte_map_[byte_]);
@@ -42,5 +42,26 @@ void ByteMixer::ByteUpdate() {
     }
   }
   offset_ = 0;
+  ByteModel::ByteUpdate();
+}
+
+void Tf1Slot::SetProbs(const float* set_probs) {
+  for (int i = 0; i < 256; ++i) {
+    probs_[i] = (vocab_[i] && transformer::InSet(i))
+        ? set_probs[transformer::kByteToIndex[i]] : 0.0f;
+  }
+  ByteModel::ByteUpdate();
+}
+
+void Tf1Slot::SetProbsNeutral() {
+  const float u = 1.0f / (float)transformer::kSetSize;
+  for (int i = 0; i < 256; ++i) {
+    probs_[i] = (vocab_[i] && transformer::InSet(i)) ? u : 0.0f;
+  }
+  ByteModel::ByteUpdate();
+}
+
+void Tf1Slot::SetProbsOff() {
+  for (int i = 0; i < 256; ++i) probs_[i] = 0.0f;
   ByteModel::ByteUpdate();
 }

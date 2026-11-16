@@ -1,0 +1,4 @@
+#ifndef WIN_COMPAT_SYS_SYSCALL_H
+#define WIN_COMPAT_SYS_SYSCALL_H
+
+#endif
