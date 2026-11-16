@@ -433,7 +433,9 @@ void Predictor::AddMixers() {
   AddMixer(0, manager_.b3streamcxt, 0.001);   // 3-bit syntax stream with bracket resets (512 states)
   AddMixer(0, manager_.b2streamcxt, 0.001);   // 2-bit class stream (1024 states)
 
-  input_size = mixers_[0].size() + auxiliary_.size();
+  // EXP-183: Reserve extra Layer-1 input slot for bilinear PPMd feature
+  ppmd_bilinear_slot_ = mixers_[0].size() + auxiliary_.size();
+  input_size = ppmd_bilinear_slot_ + 1;
   layers_[1]->SetNumModels(input_size);
   AddMixer(1, manager_.zero_context_, 0.0003);
   mixers_[1][0]->E2ESeedHead(mixers_[0].size(), 1.0f / (float)mixers_[0].size());
@@ -441,6 +443,8 @@ void Predictor::AddMixers() {
   unsigned int fw_aux_slot = mixers_[0].size() + (auxiliary_.size() - 1);
   mixers_[1][0]->E2ESeedHead(fw_aux_slot + 1, 0.15f);
   AddMixer(1, manager_.longest_match_regime_, 0.00015);
+  // EXP-183: Layer-1 MoE PPMd Order-Regime Residual Mixer
+  AddMixer(1, manager_.ppmd_order_regime_, 0.00015);
 }
 
 int lstmpr=0, lstmex=0;
@@ -455,10 +459,14 @@ float Predictor::Predict() {
     }
   }
 
+  float ppmd_logit = 0.0f;
   for (unsigned int i = 0; i < byte_models_.size(); ++i) {
     const std::valarray<float>& outputs = byte_models_[i]->Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0]->SetInput(input_index, outputs[j]);
+      if (byte_models_[i].get() == ppmd_) {
+        ppmd_logit = layers_[0]->Inputs()[input_index];
+      }
       ++input_index;
     }
   }
@@ -490,6 +498,22 @@ float Predictor::Predict() {
   else if (manager_.longest_match_ >= 1) manager_.longest_match_regime_ = 1;
   else manager_.longest_match_regime_ = 0;
 
+  // EXP-183: Update PPMd order regime & compute bilinear interaction feature
+  int ppmd_order = ppmd_ ? ppmd_->Order() : 0;
+  manager_.UpdatePPMDOrderRegime(ppmd_order);
+
+  static const float kPPMdReliability[26] = {
+    0.05f, 0.15f, 0.30f, 0.45f, 0.60f,
+    0.72f, 0.80f, 0.85f, 0.90f, 0.92f,
+    0.94f, 0.96f, 0.98f, 0.99f, 0.99f,
+    1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
+    1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
+    1.00f
+  };
+  int clamped_k = std::min(std::max(ppmd_order, 0), 25);
+  float phi_k = kPPMdReliability[clamped_k];
+  float ppmd_bilinear = phi_k * ppmd_logit;
+
   const unsigned int n0 = (unsigned int)mixers_[0].size();
   if (n0 > 0 && n0 <= 64) {
     const std::valarray<float>& in0 = layers_[0]->Inputs();
@@ -516,12 +540,15 @@ float Predictor::Predict() {
     float p = layers_[0]->Inputs()[auxiliary_[i]];
     layers_[1]->SetStretchedInput(mixers_[0].size() + i, p);
   }
+  // EXP-183: Forward bilinear feature directly into Layer 1
+  layers_[1]->SetStretchedInput(ppmd_bilinear_slot_, ppmd_bilinear);
+
   float p_base = mixers_[1][0]->Mix();
   float p_res  = mixers_[1][1]->Mix();
-  float p = Sigmoid::Logistic(p_base + p_res);
+  float p_ppmd = mixers_[1][2]->Mix();
+  float p = Sigmoid::Logistic(p_base + p_res + p_ppmd);
 
   // EXP-081: Zero-RAM SSE context conditioning (Surprise x PPMd order & Dispute x Lexical)
-  int ppmd_order = ppmd_ ? ppmd_->Order() : 0;
   int order_bin = (ppmd_order >= 12 ? 3 : (ppmd_order >= 5 ? 2 : (ppmd_order >= 2 ? 1 : 0)));
   int surprise_bin = pagectx::surprise.s1;
   uint8_t ctx_s1 = static_cast<uint8_t>(((order_bin & 3) << 2) | (surprise_bin & 3));
@@ -667,19 +694,20 @@ void Predictor::Pretrain(int bit) {
 void Predictor::E2EGrad(int bit) {
   const unsigned int n = (unsigned int)mixers_[0].size();
   if (n == 0 || n > 64) return;
-  const float p_combined = mixers_[1][0]->E2EP() + mixers_[1][1]->E2EP();
+  const float p_combined = mixers_[1][0]->E2EP() + mixers_[1][1]->E2EP() + mixers_[1][2]->E2EP();
   const float g_final = Sigmoid::Logistic(p_combined) - (float)bit;
   float gamma[64];
   const float* xw[64];
   for (unsigned int k = 0; k < n; ++k) xw[k] = mixers_[0][k]->E2EXRow();
   const float* const w1_base = mixers_[1][0]->E2EWRow();
   const float* const w1_res  = mixers_[1][1]->E2EWRow();
+  const float* const w1_ppmd = mixers_[1][2]->E2EWRow();
   const float s_min = layers_[0]->StretchedMin();
   const float s_max = layers_[0]->StretchedMax();
   unsigned int i = n;
   while (i > 0) {
     --i;
-    float s = w1_base[i] + w1_res[i];
+    float s = w1_base[i] + w1_res[i] + w1_ppmd[i];
     for (unsigned int k = i + 1; k < n; ++k) {
       if (xw[k]) s += gamma[k] * xw[k][i];
     }
@@ -691,4 +719,5 @@ void Predictor::E2EGrad(int bit) {
   }
   mixers_[1][0]->E2ESetErr(g_final);
   mixers_[1][1]->E2ESetErr(g_final);
+  mixers_[1][2]->E2ESetErr(g_final);
 }

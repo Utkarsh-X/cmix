@@ -18,11 +18,12 @@ struct ContextManager {
   void UpdateWords();
   void UpdateRecentBytes();
   void UpdateWRTContext();
+  void UpdatePPMDOrderRegime(int ppmd_order);
 
   unsigned int bit_context_ = 1, wrt_state_ = 0;
   unsigned long long long_bit_context_ = 1, zero_context_ = 0, history_pos_ = 0,
       line_break_ = 0, longest_match_ = 0, auxiliary_context_ = 0,
-      longest_match_regime_ = 0, wrt_context_ = 0;
+      longest_match_regime_ = 0, ppmd_order_regime_ = 0, wrt_context_ = 0;
   unsigned long long words = 0, wordscxt = 0;
   unsigned long long b2stream = 0, b2streamcxt = 0, n2bState = 0;
   unsigned long long b3stream = 0, b3streamcxt = 0, n3bState = 0;

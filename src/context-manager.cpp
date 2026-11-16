@@ -89,6 +89,14 @@ void ContextManager::UpdateWRTContext() {
   }
 }
 
+void ContextManager::UpdatePPMDOrderRegime(int ppmd_order) {
+  // EXP-183: 4-State Empirical Entropy Plateau Partition
+  if (ppmd_order >= 12) ppmd_order_regime_ = 3;
+  else if (ppmd_order >= 5) ppmd_order_regime_ = 2;
+  else if (ppmd_order >= 2) ppmd_order_regime_ = 1;
+  else ppmd_order_regime_ = 0;
+}
+
 void ContextManager::UpdateContexts(int bit) {
   bit_context_ += bit_context_ + bit;
   long_bit_context_ = bit_context_;
